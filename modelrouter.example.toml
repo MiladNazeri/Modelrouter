@@ -1,0 +1,122 @@
+# Copy this file to modelrouter.toml and adjust enabled providers, models, and endpoints.
+
+[[providers]]
+id = "local"
+model = "llama3.2:3b"
+enabled = true
+kind = "local_cli"
+billing = "local"
+input_cost_per_million_tokens = 0.0
+output_cost_per_million_tokens = 0.0
+max_input_tokens = 32000
+capabilities = ["local", "privacy", "summarization", "code"]
+
+[[providers]]
+id = "claude"
+model = "sonnet"
+enabled = true
+kind = "subscription_cli"
+billing = "subscription"
+input_cost_per_million_tokens = 0.0
+output_cost_per_million_tokens = 0.0
+max_input_tokens = 200000
+capabilities = ["reasoning", "writing", "long_context", "summarization"]
+
+[[providers]]
+id = "codex"
+model = "auto"
+enabled = true
+kind = "subscription_cli"
+billing = "subscription"
+input_cost_per_million_tokens = 0.0
+output_cost_per_million_tokens = 0.0
+max_input_tokens = 128000
+capabilities = ["code", "codebase_editing", "tests", "reasoning"]
+
+[[providers]]
+id = "gemini"
+model = "gemini-2.5-pro"
+enabled = true
+kind = "subscription_cli"
+billing = "subscription"
+input_cost_per_million_tokens = 0.0
+output_cost_per_million_tokens = 0.0
+max_input_tokens = 1000000
+capabilities = ["code", "reasoning", "writing", "long_context", "summarization"]
+
+[[providers]]
+id = "lmstudio"
+model = "local-model"
+enabled = false
+kind = "open_ai_compatible"
+billing = "local"
+endpoint_url = "http://localhost:1234/v1"
+input_cost_per_million_tokens = 0.0
+output_cost_per_million_tokens = 0.0
+max_input_tokens = 128000
+capabilities = ["local", "privacy", "summarization", "code", "reasoning"]
+
+[[providers]]
+id = "llamacpp"
+model = "local-model"
+enabled = false
+kind = "open_ai_compatible"
+billing = "local"
+endpoint_url = "http://localhost:8080/v1"
+input_cost_per_million_tokens = 0.0
+output_cost_per_million_tokens = 0.0
+max_input_tokens = 128000
+capabilities = ["local", "privacy", "summarization", "code", "reasoning"]
+
+[[providers]]
+id = "openai_compatible"
+model = "model"
+enabled = false
+kind = "open_ai_compatible"
+billing = "api"
+endpoint_url = "http://localhost:8000/v1"
+input_cost_per_million_tokens = 1.0
+output_cost_per_million_tokens = 5.0
+max_input_tokens = 128000
+capabilities = ["summarization", "code", "reasoning", "writing"]
+
+[[providers]]
+id = "aider"
+model = "auto"
+enabled = false
+kind = "agent_cli"
+billing = "api"
+input_cost_per_million_tokens = 1.0
+output_cost_per_million_tokens = 5.0
+max_input_tokens = 128000
+capabilities = ["code", "codebase_editing", "tests"]
+
+[routing]
+default_provider = "claude"
+code_provider = "codex"
+reasoning_provider = "claude"
+local_provider = "local"
+
+[budget]
+# Optional hard stop for API-backed providers. Subscription/local routes do not count against it.
+monthly_api_budget_cents = 5000.0
+
+[[rules]]
+name = "private-work-stays-local"
+prefer = "local"
+
+[rules.when]
+private = true
+
+[[rules]]
+name = "long-context-to-gemini"
+prefer = "gemini"
+
+[rules.when]
+long_context = true
+
+[[profiles]]
+name = "modelrouter"
+path_contains = "Modelrouter"
+code_provider = "codex"
+default_provider = "claude"

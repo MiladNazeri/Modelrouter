@@ -1,0 +1,25 @@
+[package]
+name = "modelrouter"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Local-first smart router for subscription CLIs, local models, and API-backed LLM providers."
+readme = "README.md"
+keywords = ["llm", "router", "cli", "mcp", "local-first"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.53", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+thiserror = "2.0.17"
+tiny_http = "0.12.0"
+toml = "0.9.8"
+
+[dev-dependencies]
+assert_cmd = "2.1.1"
+predicates = "3.1.3"
+tempfile = "3.23.0"
+temp-env = "0.3.6"
