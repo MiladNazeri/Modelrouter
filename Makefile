@@ -1,6 +1,6 @@
 CARGO ?= cargo
 
-.PHONY: fmt fmt-check typecheck unit integration e2e test lint audit coverage ci
+.PHONY: fmt fmt-check typecheck unit integration e2e test lint audit coverage install ci
 
 fmt:
 	$(CARGO) fmt
@@ -31,5 +31,8 @@ audit:
 
 coverage:
 	$(CARGO) llvm-cov --all-targets --all-features
+
+install:
+	PATH="$(HOME)/.cargo/bin:$(PATH)" $(CARGO) install --path . --locked
 
 ci: fmt-check typecheck test lint

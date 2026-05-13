@@ -139,6 +139,12 @@ fn gui_endpoint_returns_html() {
             .contains("Metrics")
     );
     assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
+            .contains("modelrouter doctor")
+    );
+    assert!(
         !response.body["html"]
             .as_str()
             .expect("html")

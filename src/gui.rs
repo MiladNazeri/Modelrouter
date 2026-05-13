@@ -69,6 +69,16 @@ pub const GUI_HTML: &str = r#"<!doctype html>
     table { width: 100%; border-collapse: collapse; }
     th, td { text-align: left; border-bottom: 1px solid var(--line); padding: 7px 4px; vertical-align: top; }
     th { color: var(--muted); font-weight: 600; }
+    code {
+      display: block;
+      overflow-wrap: anywhere;
+      color: var(--accent);
+      background: #0d0f13;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 8px;
+      margin: 6px 0;
+    }
     .available { color: var(--accent); }
     .unavailable { color: var(--bad); }
     .disabled { color: var(--warn); }
@@ -125,6 +135,10 @@ pub const GUI_HTML: &str = r#"<!doctype html>
         <pre id="output"></pre>
       </section>
       <aside class="panel">
+        <h2>Setup</h2>
+        <code>modelrouter init</code>
+        <code>modelrouter doctor</code>
+        <code>modelrouter daemon start</code>
         <h2>Metrics</h2>
         <pre id="metrics">No request log loaded.</pre>
         <h2>Queue</h2>

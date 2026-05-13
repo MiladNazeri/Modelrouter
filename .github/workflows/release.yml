@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: modelrouter-macos
+            archive: modelrouter-macos.tar.gz
+          - os: ubuntu-latest
+            artifact: modelrouter-linux
+            archive: modelrouter-linux.tar.gz
+          - os: windows-latest
+            artifact: modelrouter-windows
+            archive: modelrouter-windows.zip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - name: Package Unix
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          cp target/release/modelrouter dist/modelrouter
+          tar -C dist -czf "${{ matrix.archive }}" modelrouter
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item target/release/modelrouter.exe dist/modelrouter.exe
+          Compress-Archive -Path dist/modelrouter.exe -DestinationPath "${{ matrix.archive }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.archive }}

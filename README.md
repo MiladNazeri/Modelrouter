@@ -12,6 +12,35 @@ This project is early alpha. It is designed for localhost use and assumes you tr
 
 For shared machines, set `[server].auth_token` in `modelrouter.toml`; daemon control endpoints then require `Authorization: Bearer <token>`. Keep `modelrouter.toml`, `.env`, request logs, and local `.modelrouter/` data private.
 
+## Quick Start
+
+Install from GitHub:
+
+```sh
+cargo install --git https://github.com/MiladNazeri/Modelrouter --locked
+```
+
+Or install from a local checkout:
+
+```sh
+make install
+```
+
+Create a private local config and verify the machine:
+
+```sh
+modelrouter init
+modelrouter doctor
+```
+
+Start the daemon and GUI:
+
+```sh
+modelrouter daemon start
+```
+
+Then open `http://127.0.0.1:8787`.
+
 ## What It Routes On
 
 - Task type inferred from the prompt or `--hint`: simple, code, deep reasoning, or writing.
@@ -42,40 +71,53 @@ API-billed OpenAI-compatible providers reject obvious local/private endpoint add
 
 ## CLI
 
+Create a config from detected local tools:
+
+```sh
+modelrouter init
+```
+
+Check what is ready and what needs login/config:
+
+```sh
+modelrouter doctor
+modelrouter doctor --json
+```
+
 Route without running a model:
 
 ```sh
-cargo run -- route --prompt "Fix the failing parser tests in this repo" --json
+modelrouter route --prompt "Fix the failing parser tests in this repo" --json
 ```
 
 Route and run the selected provider:
 
 ```sh
-cargo run -- run --prompt "Summarize this private note."
+modelrouter run --prompt "Summarize this private note."
 ```
 
 Check provider health:
 
 ```sh
-cargo run -- health --json
+modelrouter health --json
 ```
 
 Write JSONL request logs:
 
 ```sh
-cargo run -- route --prompt "Draft a short memo" --log .modelrouter/requests.jsonl
+modelrouter route --prompt "Draft a short memo" --log .modelrouter/requests.jsonl
 ```
 
 Show local spend/request metrics from the JSONL log:
 
 ```sh
-cargo run -- spend report --log .modelrouter/requests.jsonl --json
+modelrouter spend report --log .modelrouter/requests.jsonl --json
 ```
 
 Apply project profiles by passing `--cwd` or by running from a matching directory:
 
 ```sh
-cargo run -- route --prompt "Fix the parser" --cwd /path/to/repo --json
+modelrouter route --prompt "Fix the parser" --cwd /path/to/repo --json
 ```
 
 ## Routing Rules And Profiles
@@ -148,10 +190,17 @@ cargo run -- spend google-query \
 Start the local daemon:
 
 ```sh
-cargo run -- serve --host 127.0.0.1 --port 8787 --log .modelrouter/requests.jsonl
+modelrouter daemon start
 ```
 
 By default the daemon binds to `127.0.0.1`. Passing `--host 0.0.0.0` exposes it on the network and should be paired with an auth token and trusted network controls.
+
+Generate a macOS LaunchAgent plist:
+
+```sh
+modelrouter daemon launchd-plist --output ~/Library/LaunchAgents/com.modelrouter.daemon.plist
+launchctl load ~/Library/LaunchAgents/com.modelrouter.daemon.plist
+```
 
 Endpoints:
 
@@ -196,7 +245,7 @@ Compression is available as a library primitive today through `compress_prompt`;
 Start the MCP stdio server:
 
 ```sh
-cargo run -- mcp --config modelrouter.toml
+modelrouter mcp --config modelrouter.toml
 ```
 
 The MCP server exposes:
@@ -207,16 +256,11 @@ The MCP server exposes:
 
 Example MCP client config shape:
 
-```json
-{
-  "mcpServers": {
-    "modelrouter": {
-      "command": "/absolute/path/to/modelrouter",
-      "args": ["mcp", "--config", "/absolute/path/to/modelrouter.toml"]
-    }
-  }
-}
+```sh
+modelrouter mcp install-config --config modelrouter.toml
 ```
+
+That prints the JSON block to paste into an MCP client config.
 
 ## Development
 
@@ -234,7 +278,10 @@ make typecheck
 make test
 make lint
 make audit
+make install
 ```
+
+Release artifacts are built by `.github/workflows/release.yml` for tag pushes such as `v0.1.0`.
 
 Coverage is available with:
 

@@ -60,9 +60,129 @@ fn help_lists_mcp_and_health_commands() {
         .arg("--help")
         .assert()
         .success()
+        .stdout(predicate::str::contains("init"))
+        .stdout(predicate::str::contains("doctor"))
+        .stdout(predicate::str::contains("daemon"))
         .stdout(predicate::str::contains("mcp"))
         .stdout(predicate::str::contains("health"))
         .stdout(predicate::str::contains("spend"));
+}
+
+#[test]
+fn init_command_writes_safe_local_config() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("modelrouter.toml");
+    let mut command = Command::cargo_bin("modelrouter").expect("binary exists");
+
+    command
+        .current_dir(dir.path())
+        .args([
+            "init",
+            "--config",
+            config_path.to_str().expect("utf8 path"),
+            "--local-endpoint",
+            "http://localhost:11434/v1",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wrote"));
+
+    let contents = std::fs::read_to_string(&config_path).expect("config contents");
+    assert!(contents.contains("[[providers]]"));
+    assert!(contents.contains("id = \"codex\""));
+    assert!(contents.contains("id = \"claude\""));
+    assert!(contents.contains("id = \"gemini\""));
+    assert!(contents.contains("endpoint_url = \"http://localhost:11434/v1\""));
+    assert!(!contents.contains("sk-"));
+}
+
+#[test]
+fn init_command_refuses_to_overwrite_without_force() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("modelrouter.toml");
+    std::fs::write(&config_path, "existing = true\n").expect("write config");
+    let mut command = Command::cargo_bin("modelrouter").expect("binary exists");
+
+    command
+        .current_dir(dir.path())
+        .args(["init", "--config", config_path.to_str().expect("utf8 path")])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn doctor_command_reports_config_and_providers_as_json() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("modelrouter.toml");
+    let mut init = Command::cargo_bin("modelrouter").expect("binary exists");
+    init.current_dir(dir.path())
+        .args([
+            "init",
+            "--config",
+            config_path.to_str().expect("utf8 path"),
+            "--force",
+        ])
+        .assert()
+        .success();
+    let mut doctor = Command::cargo_bin("modelrouter").expect("binary exists");
+
+    doctor
+        .current_dir(dir.path())
+        .args([
+            "doctor",
+            "--config",
+            config_path.to_str().expect("utf8 path"),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""config_found":true"#))
+        .stdout(predicate::str::contains(r#""providers""#))
+        .stdout(predicate::str::contains(r#""next_steps""#));
+}
+
+#[test]
+fn daemon_launchd_plist_prints_launch_agent() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("modelrouter.toml");
+    std::fs::write(&config_path, "# local config\n").expect("write config");
+    let mut command = Command::cargo_bin("modelrouter").expect("binary exists");
+
+    command
+        .args([
+            "daemon",
+            "launchd-plist",
+            "--config",
+            config_path.to_str().expect("utf8 path"),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("com.modelrouter.daemon"))
+        .stdout(predicate::str::contains("ProgramArguments"))
+        .stdout(predicate::str::contains("daemon"))
+        .stdout(predicate::str::contains("start"));
+}
+
+#[test]
+fn mcp_install_config_prints_client_json() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("modelrouter.toml");
+    std::fs::write(&config_path, "# local config\n").expect("write config");
+    let mut command = Command::cargo_bin("modelrouter").expect("binary exists");
+
+    command
+        .args([
+            "mcp",
+            "install-config",
+            "--config",
+            config_path.to_str().expect("utf8 path"),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""mcpServers""#))
+        .stdout(predicate::str::contains(r#""modelrouter""#))
+        .stdout(predicate::str::contains(r#""mcp""#));
 }
 
 #[test]
