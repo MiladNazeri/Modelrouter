@@ -243,6 +243,30 @@ where
     handle_server_request_with_queue_and_report(&mut config, method, path, body, runner, runtime)
 }
 
+pub fn handle_server_request_with_headers_runner_and_report<F>(
+    config: &RouterConfig,
+    method: &str,
+    path: &str,
+    body: &str,
+    headers: &[(&str, &str)],
+    runner: F,
+    health_report_override: Option<&[ProviderHealth]>,
+) -> ServerResponse
+where
+    F: Fn(&ProviderConfig, &str, Option<&Path>) -> Result<String, String>,
+{
+    let mut config = config.clone();
+    let queue = ExecutionQueue::default();
+    let runtime = ServerRuntime {
+        health_report_override,
+        queue: &queue,
+        log_path: None,
+        config_path: None,
+        headers,
+    };
+    handle_server_request_with_queue_and_report(&mut config, method, path, body, runner, runtime)
+}
+
 fn handle_server_request_with_queue_and_report<F>(
     config: &mut RouterConfig,
     method: &str,

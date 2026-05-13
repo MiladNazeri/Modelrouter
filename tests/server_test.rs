@@ -2,6 +2,7 @@ use std::path::Path;
 
 use modelrouter::{
     ProviderConfig, RouterConfig, handle_server_request, handle_server_request_with_config_path,
+    handle_server_request_with_headers_runner_and_report,
     handle_server_request_with_runner_and_report, health_report_with,
 };
 
@@ -225,8 +226,9 @@ fn configured_auth_token_blocks_run_without_bearer_token() {
 fn configured_auth_token_accepts_matching_bearer_token() {
     let mut config = RouterConfig::default();
     config.server.auth_token = Some("secret-token".to_string());
+    let report = health_report_with(&config, |_| true, |_| true);
 
-    let response = modelrouter::handle_server_request_with_headers_and_runner(
+    let response = handle_server_request_with_headers_runner_and_report(
         &config,
         "POST",
         "/run",
@@ -235,6 +237,7 @@ fn configured_auth_token_accepts_matching_bearer_token() {
         |_provider: &ProviderConfig, prompt: &str, _cwd: Option<&Path>| {
             Ok(format!("authorized: {prompt}"))
         },
+        Some(&report),
     );
 
     assert_eq!(response.status, 200);
