@@ -8,10 +8,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use crate::{
     ProviderId, RequestLogEntry, RouteDecision, RouteRequest, Router, RouterConfig, SpendWindow,
     TaskHint, append_request_log, apply_project_profile, build_anthropic_cost_request,
-    build_google_billing_query, build_openai_cost_request, health_report, load_config,
-    load_metrics, parse_anthropic_cost_report, parse_openai_costs_response,
-    run_provider_with_usage, serve_mcp, serve_with_log, sync_anthropic_cost_report,
-    sync_openai_costs,
+    build_openai_cost_request, health_report, load_config, load_metrics,
+    parse_anthropic_cost_report, parse_openai_costs_response, run_provider_with_usage, serve_mcp,
+    serve_with_log, sync_anthropic_cost_report, sync_openai_costs, try_build_google_billing_query,
 };
 
 #[derive(Debug, Parser)]
@@ -374,7 +373,7 @@ fn run_spend(command: SpendCommand) -> anyhow::Result<()> {
         } => {
             println!(
                 "{}",
-                build_google_billing_query(&table, &start_date, &end_date)
+                try_build_google_billing_query(&table, &start_date, &end_date)?
             );
         }
         SpendCommand::ParseOpenai { file } => {

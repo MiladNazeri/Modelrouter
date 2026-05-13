@@ -1,6 +1,6 @@
 CARGO ?= cargo
 
-.PHONY: fmt fmt-check typecheck unit integration e2e test lint coverage ci
+.PHONY: fmt fmt-check typecheck unit integration e2e test lint audit coverage ci
 
 fmt:
 	$(CARGO) fmt
@@ -25,6 +25,9 @@ test:
 
 lint:
 	$(CARGO) clippy --all-targets --all-features -- -D warnings
+
+audit:
+	@PATH="$(HOME)/.cargo/bin:$(PATH)" $(CARGO) audit
 
 coverage:
 	$(CARGO) llvm-cov --all-targets --all-features

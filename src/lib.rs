@@ -17,7 +17,8 @@ mod spend;
 pub use compression::{CompressedPrompt, compress_prompt};
 pub use config::{
     BillingMode, Capability, ProjectProfile, ProviderConfig, ProviderId, ProviderKind, RouteMatch,
-    RouteRule, RouterConfig, RoutingConfig, TaskHint, apply_project_profile, load_config,
+    RouteRule, RouterConfig, RoutingConfig, ServerConfig, TaskHint, apply_project_profile,
+    load_config,
 };
 pub use feedback::{FeedbackEntry, append_feedback};
 pub use gui::GUI_HTML;
@@ -41,16 +42,18 @@ pub use provider_http::{
 pub use queue::{ExecutionQueue, QueueJob, QueueStatus};
 pub use router::{RouteDecision, RouteRequest, Router, RouterError};
 pub use server::{
-    ServerResponse, handle_server_request, handle_server_request_with_runner,
-    handle_server_request_with_runner_and_report, serve, serve_with_log,
+    MAX_REQUEST_BODY_BYTES, ServerResponse, handle_server_request,
+    handle_server_request_with_headers, handle_server_request_with_headers_and_runner,
+    handle_server_request_with_runner, handle_server_request_with_runner_and_report, serve,
+    serve_with_log,
 };
 pub use spend::{
     BudgetConfig, BudgetDecision, BudgetState, ProviderSpendReport, SecretRef, SpendHttpRequest,
-    SpendItem, SpendProvider, SpendReconciliation, SpendSyncError, SpendWindow,
+    SpendInputError, SpendItem, SpendProvider, SpendReconciliation, SpendSyncError, SpendWindow,
     build_anthropic_cost_request, build_google_billing_query, build_openai_cost_request,
     check_api_budget, execute_spend_request, parse_anthropic_cost_report,
     parse_google_billing_rows, parse_openai_costs_response, reconcile_spend,
-    sync_anthropic_cost_report, sync_openai_costs,
+    sync_anthropic_cost_report, sync_openai_costs, try_build_google_billing_query,
 };
 
 pub fn run_cli() -> anyhow::Result<()> {

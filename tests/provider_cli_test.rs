@@ -81,10 +81,8 @@ fn builds_aider_agent_cli_command() {
     );
 
     assert_eq!(command.program, "aider");
-    assert_eq!(
-        command.args,
-        vec!["--yes", "--message", "Refactor this module."]
-    );
+    assert_eq!(command.args, vec!["--yes", "--message-file", "/dev/stdin"]);
+    assert_eq!(command.stdin, "Refactor this module.");
     assert_eq!(
         command.working_dir.as_deref(),
         Some(Path::new("/tmp/project"))

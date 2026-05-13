@@ -1,5 +1,6 @@
 use modelrouter::{
     RequestLogEntry, RouteRequest, Router, RouterConfig, TokenUsage, append_request_log,
+    prompt_hash,
 };
 
 #[test]
@@ -57,4 +58,12 @@ fn request_log_can_include_actual_usage_and_cost() {
     assert_eq!(entry.actual_output_tokens, Some(8));
     assert_eq!(entry.actual_cost_cents, Some(3.5));
     assert_eq!(entry.spend_source.as_deref(), Some("provider_response"));
+}
+
+#[test]
+fn prompt_hash_is_stable_sha256() {
+    assert_eq!(
+        prompt_hash("hello"),
+        "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    );
 }

@@ -1,5 +1,9 @@
 # Copy this file to modelrouter.toml and adjust enabled providers, models, and endpoints.
 
+[server]
+# Optional bearer token for daemon write/control endpoints.
+# auth_token = "change-me"
+
 [[providers]]
 id = "local"
 model = "llama3.2:3b"

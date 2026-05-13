@@ -160,9 +160,21 @@ pub const GUI_HTML: &str = r#"<!doctype html>
     async function loadHealth() {
       const res = await fetch('/health');
       const json = await res.json();
-      health.innerHTML = json.providers.map(p =>
-        `<tr><td>${p.provider}</td><td class="${p.status}">${p.status}<br><small>${p.message}</small></td></tr>`
-      ).join('');
+      const rows = json.providers.map(p => {
+        const row = document.createElement('tr');
+        const provider = document.createElement('td');
+        provider.textContent = p.provider;
+        const status = document.createElement('td');
+        status.className = p.status;
+        status.append(document.createTextNode(p.status));
+        status.append(document.createElement('br'));
+        const message = document.createElement('small');
+        message.textContent = p.message || '';
+        status.append(message);
+        row.append(provider, status);
+        return row;
+      });
+      health.replaceChildren(...rows);
     }
     document.getElementById('routeBtn').onclick = () => post('/route');
     document.getElementById('runBtn').onclick = () => post('/run');

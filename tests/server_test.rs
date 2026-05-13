@@ -80,6 +80,18 @@ fn unknown_endpoint_returns_not_found() {
 }
 
 #[test]
+fn oversized_post_body_is_rejected_before_routing() {
+    let config = RouterConfig::default();
+    let prompt = "x".repeat(modelrouter::MAX_REQUEST_BODY_BYTES + 1);
+    let body = format!(r#"{{"prompt":"{prompt}"}}"#);
+
+    let response = handle_server_request(&config, "POST", "/route", &body);
+
+    assert_eq!(response.status, 413);
+    assert_eq!(response.body["error"], "request_too_large");
+}
+
+#[test]
 fn health_endpoint_returns_provider_status() {
     let config = RouterConfig::default();
 
@@ -92,6 +104,12 @@ fn health_endpoint_returns_provider_status() {
             .expect("providers")
             .len()
             >= 3
+    );
+    assert!(
+        !response
+            .body
+            .to_string()
+            .contains("http://localhost:1234/v1")
     );
 }
 
@@ -120,6 +138,12 @@ fn gui_endpoint_returns_html() {
             .expect("html")
             .contains("Metrics")
     );
+    assert!(
+        !response.body["html"]
+            .as_str()
+            .expect("html")
+            .contains("innerHTML")
+    );
 }
 
 #[test]
@@ -140,10 +164,8 @@ fn queue_endpoint_returns_completed_job() {
 
     assert_eq!(response.status, 202);
     assert_eq!(response.body["status"], "completed");
-    assert_eq!(
-        response.body["output"],
-        "queued: Summarize this quick note."
-    );
+    assert!(response.body.get("prompt").is_none());
+    assert!(response.body.get("output").is_none());
 }
 
 #[test]
@@ -168,4 +190,41 @@ fn spend_and_budget_endpoints_return_tracking_state() {
     assert_eq!(spend.body["total_requests"], 0);
     assert_eq!(budget.status, 200);
     assert_eq!(budget.body["monthly_api_budget_cents"], 1_000.0);
+}
+
+#[test]
+fn configured_auth_token_blocks_run_without_bearer_token() {
+    let mut config = RouterConfig::default();
+    config.server.auth_token = Some("secret-token".to_string());
+
+    let response = modelrouter::handle_server_request_with_headers(
+        &config,
+        "POST",
+        "/run",
+        r#"{"prompt":"Summarize this note."}"#,
+        &[],
+    );
+
+    assert_eq!(response.status, 401);
+    assert_eq!(response.body["error"], "unauthorized");
+}
+
+#[test]
+fn configured_auth_token_accepts_matching_bearer_token() {
+    let mut config = RouterConfig::default();
+    config.server.auth_token = Some("secret-token".to_string());
+
+    let response = modelrouter::handle_server_request_with_headers_and_runner(
+        &config,
+        "POST",
+        "/run",
+        r#"{"prompt":"Summarize this note."}"#,
+        &[("authorization", "Bearer secret-token")],
+        |_provider: &ProviderConfig, prompt: &str, _cwd: Option<&Path>| {
+            Ok(format!("authorized: {prompt}"))
+        },
+    );
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body["output"], "authorized: Summarize this note.");
 }

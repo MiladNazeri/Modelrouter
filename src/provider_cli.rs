@@ -285,13 +285,13 @@ fn build_ollama_command(model: &str, prompt: &str, cwd: Option<&Path>) -> Provid
 fn build_aider_command(model: &str, prompt: &str, cwd: Option<&Path>) -> ProviderCommand {
     let mut args = vec!["--yes".to_string()];
     push_model_args(&mut args, "--model", model);
-    args.push("--message".to_string());
-    args.push(prompt.to_string());
+    args.push("--message-file".to_string());
+    args.push("/dev/stdin".to_string());
 
     ProviderCommand {
         program: "aider".to_string(),
         args,
-        stdin: String::new(),
+        stdin: prompt.to_string(),
         working_dir: cwd.map(Path::to_path_buf),
     }
 }

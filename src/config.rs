@@ -182,6 +182,14 @@ pub struct RouterConfig {
     pub profiles: Vec<ProjectProfile>,
     #[serde(default)]
     pub budget: BudgetConfig,
+    #[serde(default)]
+    pub server: ServerConfig,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ServerConfig {
+    #[serde(default)]
+    pub auth_token: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -412,6 +420,7 @@ impl Default for RouterConfig {
             rules: Vec::new(),
             profiles: Vec::new(),
             budget: BudgetConfig::default(),
+            server: ServerConfig::default(),
         }
     }
 }

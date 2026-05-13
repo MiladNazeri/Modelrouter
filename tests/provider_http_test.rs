@@ -1,6 +1,7 @@
 use modelrouter::{
-    BillingMode, Capability, ProviderConfig, ProviderId, ProviderKind, build_http_provider_request,
-    parse_openai_compatible_response, parse_openai_compatible_response_with_usage,
+    BillingMode, Capability, ProviderConfig, ProviderHttpError, ProviderId, ProviderKind,
+    build_http_provider_request, parse_openai_compatible_response,
+    parse_openai_compatible_response_with_usage,
 };
 
 #[test]
@@ -26,6 +27,26 @@ fn builds_openai_compatible_chat_request() {
     assert_eq!(request.body["stream"], false);
     assert_eq!(request.body["messages"][0]["role"], "user");
     assert_eq!(request.body["messages"][0]["content"], "Summarize this.");
+}
+
+#[test]
+fn api_billed_http_provider_rejects_private_endpoint() {
+    let provider = ProviderConfig {
+        id: ProviderId::OpenAiCompatible,
+        model: "api-model".to_string(),
+        enabled: true,
+        kind: ProviderKind::OpenAiCompatible,
+        billing: BillingMode::Api,
+        endpoint_url: Some("http://127.0.0.1:8000/v1".to_string()),
+        input_cost_per_million_tokens: 1.0,
+        output_cost_per_million_tokens: 5.0,
+        max_input_tokens: 128_000,
+        capabilities: vec![Capability::Code],
+    };
+
+    let error = build_http_provider_request(&provider, "Summarize this.").expect_err("error");
+
+    assert!(matches!(error, ProviderHttpError::PrivateEndpoint { .. }));
 }
 
 #[test]

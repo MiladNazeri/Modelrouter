@@ -1,7 +1,9 @@
+use std::net::IpAddr;
+
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use crate::ProviderConfig;
+use crate::{BillingMode, ProviderConfig};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct HttpProviderRequest {
@@ -28,6 +30,8 @@ pub enum ProviderHttpError {
     MissingEndpoint { provider: String },
     #[error("provider endpoint must start with http:// or https://: {url}")]
     InvalidEndpoint { url: String },
+    #[error("api-billed provider endpoint cannot target a local or private address: {url}")]
+    PrivateEndpoint { url: String },
     #[error("http request to {url} failed: {source}")]
     Request { url: String, source: reqwest::Error },
     #[error("provider returned status {status}: {body}")]
@@ -52,6 +56,16 @@ pub fn build_http_provider_request(
 
     if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
         return Err(ProviderHttpError::InvalidEndpoint {
+            url: endpoint.to_string(),
+        });
+    }
+    if reqwest::Url::parse(endpoint).is_err() {
+        return Err(ProviderHttpError::InvalidEndpoint {
+            url: endpoint.to_string(),
+        });
+    }
+    if provider.billing == BillingMode::Api && endpoint_uses_private_address(endpoint) {
+        return Err(ProviderHttpError::PrivateEndpoint {
             url: endpoint.to_string(),
         });
     }
@@ -90,7 +104,14 @@ pub fn run_http_provider_with_usage(
     prompt: &str,
 ) -> Result<HttpProviderOutput, ProviderHttpError> {
     let request = build_http_provider_request(provider, prompt)?;
-    let response = reqwest::blocking::Client::new()
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|source| ProviderHttpError::Request {
+            url: request.url.clone(),
+            source,
+        })?;
+    let response = client
         .post(&request.url)
         .json(&request.body)
         .send()
@@ -162,4 +183,36 @@ fn parse_usage(value: &Value) -> Option<TokenUsage> {
         output_tokens,
         total_tokens,
     })
+}
+
+fn endpoint_uses_private_address(endpoint: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_matches(['[', ']']).to_ascii_lowercase();
+    if matches!(host.as_str(), "localhost" | "0.0.0.0") || host.ends_with(".localhost") {
+        return true;
+    }
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => {
+            let [first, second, _, _] = ip.octets();
+            first == 0
+                || first == 10
+                || first == 127
+                || (first == 169 && second == 254)
+                || (first == 172 && (16..=31).contains(&second))
+                || (first == 192 && second == 168)
+        }
+        Ok(IpAddr::V6(ip)) => {
+            let first_segment = ip.segments()[0];
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || (first_segment & 0xfe00) == 0xfc00
+                || (first_segment & 0xffc0) == 0xfe80
+        }
+        Err(_) => false,
+    }
 }

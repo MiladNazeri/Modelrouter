@@ -10,6 +10,8 @@ The default policy is intentionally subscription-first for code and reasoning, l
 
 This project is early alpha. It is designed for localhost use and assumes you trust the machine running the daemon. Provider CLI behavior, model names, and billing APIs can change. Spend tracking and budget controls are guardrails, not financial guarantees.
 
+For shared machines, set `[server].auth_token` in `modelrouter.toml`; daemon control endpoints then require `Authorization: Bearer <token>`. Keep `modelrouter.toml`, `.env`, request logs, and local `.modelrouter/` data private.
+
 ## What It Routes On
 
 - Task type inferred from the prompt or `--hint`: simple, code, deep reasoning, or writing.
@@ -35,6 +37,8 @@ Built-in provider ids:
 - `aider`: agent CLI route for codebase work.
 
 Copy `modelrouter.example.toml` to `modelrouter.toml` and adjust providers, models, and endpoints.
+
+API-billed OpenAI-compatible providers reject obvious local/private endpoint addresses. Local-billed providers such as LM Studio and llama.cpp can still use localhost.
 
 ## CLI
 
@@ -147,6 +151,8 @@ Start the local daemon:
 cargo run -- serve --host 127.0.0.1 --port 8787 --log .modelrouter/requests.jsonl
 ```
 
+By default the daemon binds to `127.0.0.1`. Passing `--host 0.0.0.0` exposes it on the network and should be paired with an auth token and trusted network controls.
+
 Endpoints:
 
 - `GET /`: local HTML GUI.
@@ -167,6 +173,12 @@ Example route request:
 curl -s http://127.0.0.1:8787/route \
   -H 'content-type: application/json' \
   -d '{"prompt":"Fix the failing Rust tests","hint":"code"}'
+```
+
+With `[server].auth_token` configured, include:
+
+```sh
+-H 'authorization: Bearer your-token'
 ```
 
 Point OpenAI-compatible clients at the daemon:
@@ -221,6 +233,7 @@ make fmt-check
 make typecheck
 make test
 make lint
+make audit
 ```
 
 Coverage is available with:

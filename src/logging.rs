@@ -1,13 +1,13 @@
 use std::{
-    collections::hash_map::DefaultHasher,
+    fmt::Write as FmtWrite,
     fs::OpenOptions,
-    hash::{Hash, Hasher},
     io::Write,
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{RouteDecision, TokenUsage};
 
@@ -94,9 +94,13 @@ pub fn append_request_log(path: &Path, entry: &RequestLogEntry) -> std::io::Resu
 }
 
 pub fn prompt_hash(prompt: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    prompt.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let digest = Sha256::digest(prompt.as_bytes());
+    let mut hash = String::with_capacity(64);
+    for byte in digest {
+        FmtWrite::write_fmt(&mut hash, format_args!("{byte:02x}"))
+            .expect("writing to a String cannot fail");
+    }
+    hash
 }
 
 fn now_unix_ms() -> u128 {

@@ -1,4 +1,5 @@
 use std::{
+    io::Read,
     net::ToSocketAddrs,
     path::{Path, PathBuf},
 };
@@ -13,6 +14,8 @@ use crate::{
     append_request_log, apply_project_profile, availability_filtered_config, health_report,
     load_metrics, metrics_from_logs, run_provider,
 };
+
+pub const MAX_REQUEST_BODY_BYTES: usize = 1_048_576;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ServerResponse {
@@ -63,6 +66,7 @@ struct ServerRuntime<'a> {
     health_report_override: Option<&'a [ProviderHealth]>,
     queue: &'a ExecutionQueue,
     log_path: Option<&'a Path>,
+    headers: &'a [(&'a str, &'a str)],
 }
 
 pub fn handle_server_request(
@@ -71,9 +75,35 @@ pub fn handle_server_request(
     path: &str,
     body: &str,
 ) -> ServerResponse {
-    handle_server_request_with_runner(config, method, path, body, |provider, prompt, cwd| {
-        run_provider(provider, prompt, cwd).map_err(|error| error.to_string())
-    })
+    handle_server_request_with_headers_and_runner(
+        config,
+        method,
+        path,
+        body,
+        &[],
+        |provider, prompt, cwd| {
+            run_provider(provider, prompt, cwd).map_err(|error| error.to_string())
+        },
+    )
+}
+
+pub fn handle_server_request_with_headers(
+    config: &RouterConfig,
+    method: &str,
+    path: &str,
+    body: &str,
+    headers: &[(&str, &str)],
+) -> ServerResponse {
+    handle_server_request_with_headers_and_runner(
+        config,
+        method,
+        path,
+        body,
+        headers,
+        |provider, prompt, cwd| {
+            run_provider(provider, prompt, cwd).map_err(|error| error.to_string())
+        },
+    )
 }
 
 pub fn handle_server_request_with_runner<F>(
@@ -86,7 +116,28 @@ pub fn handle_server_request_with_runner<F>(
 where
     F: Fn(&ProviderConfig, &str, Option<&Path>) -> Result<String, String>,
 {
-    handle_server_request_with_runner_and_report(config, method, path, body, runner, None)
+    handle_server_request_with_headers_and_runner(config, method, path, body, &[], runner)
+}
+
+pub fn handle_server_request_with_headers_and_runner<F>(
+    config: &RouterConfig,
+    method: &str,
+    path: &str,
+    body: &str,
+    headers: &[(&str, &str)],
+    runner: F,
+) -> ServerResponse
+where
+    F: Fn(&ProviderConfig, &str, Option<&Path>) -> Result<String, String>,
+{
+    let queue = ExecutionQueue::default();
+    let runtime = ServerRuntime {
+        health_report_override: None,
+        queue: &queue,
+        log_path: None,
+        headers,
+    };
+    handle_server_request_with_queue_and_report(config, method, path, body, runner, runtime)
 }
 
 pub fn handle_server_request_with_runner_and_report<F>(
@@ -105,6 +156,7 @@ where
         health_report_override,
         queue: &queue,
         log_path: None,
+        headers: &[],
     };
     handle_server_request_with_queue_and_report(config, method, path, body, runner, runtime)
 }
@@ -120,6 +172,17 @@ fn handle_server_request_with_queue_and_report<F>(
 where
     F: Fn(&ProviderConfig, &str, Option<&Path>) -> Result<String, String>,
 {
+    if body.len() > MAX_REQUEST_BODY_BYTES {
+        return json_response(
+            413,
+            json!({ "error": "request_too_large", "max_bytes": MAX_REQUEST_BODY_BYTES }),
+        );
+    }
+
+    if !authorized(config, runtime.headers, path) {
+        return json_response(401, json!({ "error": "unauthorized" }));
+    }
+
     let owned_report;
     let report = match runtime.health_report_override {
         Some(report) => report,
@@ -133,7 +196,7 @@ where
         return match path {
             "/" => html_response(200, GUI_HTML),
             "/health" => health_response(report),
-            "/queue" => json_response(200, json!({ "jobs": runtime.queue.list() })),
+            "/queue" => json_response(200, json!({ "jobs": queue_views(runtime.queue) })),
             "/metrics" => metrics_response(runtime.log_path),
             "/spend" => metrics_response(runtime.log_path),
             "/budget" => json_response(200, json!(config.budget)),
@@ -175,15 +238,28 @@ where
 
     for mut request in server.incoming_requests() {
         let mut body = String::new();
-        request.as_reader().read_to_string(&mut body)?;
+        let mut reader = request
+            .as_reader()
+            .take(u64::try_from(MAX_REQUEST_BODY_BYTES + 1).unwrap_or(u64::MAX));
+        reader.read_to_string(&mut body)?;
         let path = request
             .url()
             .split_once('?')
             .map_or_else(|| request.url(), |(path, _query)| path);
+        let headers = request
+            .headers()
+            .iter()
+            .map(|header| (header.field.to_string(), header.value.as_str().to_string()))
+            .collect::<Vec<_>>();
+        let header_refs = headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect::<Vec<_>>();
         let runtime = ServerRuntime {
             health_report_override: None,
             queue: &queue,
             log_path: log_path.as_deref(),
+            headers: &header_refs,
         };
         let response = handle_server_request_with_queue_and_report(
             &config,
@@ -294,7 +370,7 @@ where
     let Some(job) = queue.get(id) else {
         return json_response(500, json!({ "error": "queue_missing_job" }));
     };
-    json_response(202, json!(job))
+    json_response(202, json!(queue_view(&job)))
 }
 
 fn metrics_response(log_path: Option<&Path>) -> ServerResponse {
@@ -507,7 +583,41 @@ fn html_response(status: u16, html: &str) -> ServerResponse {
 }
 
 fn health_response(report: &[ProviderHealth]) -> ServerResponse {
-    json_response(200, json!({ "providers": report }))
+    let sanitized = report
+        .iter()
+        .cloned()
+        .map(|mut provider| {
+            if provider.check.starts_with("http:") {
+                provider.check = "http:[redacted]".to_string();
+            }
+            provider
+        })
+        .collect::<Vec<_>>();
+    json_response(200, json!({ "providers": sanitized }))
+}
+
+fn queue_views(queue: &ExecutionQueue) -> Vec<serde_json::Value> {
+    queue.list().iter().map(queue_view).collect()
+}
+
+fn queue_view(job: &crate::QueueJob) -> serde_json::Value {
+    json!({
+        "id": job.id,
+        "status": job.status,
+    })
+}
+
+fn authorized(config: &RouterConfig, headers: &[(&str, &str)], path: &str) -> bool {
+    let Some(token) = config.server.auth_token.as_deref() else {
+        return true;
+    };
+    if matches!(path, "/" | "/health") {
+        return true;
+    }
+    let expected = format!("Bearer {token}");
+    headers
+        .iter()
+        .any(|(name, value)| name.eq_ignore_ascii_case("authorization") && value.trim() == expected)
 }
 
 fn to_tiny_response(response: ServerResponse) -> Response<std::io::Cursor<Vec<u8>>> {

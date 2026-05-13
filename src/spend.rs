@@ -1,3 +1,6 @@
+use std::fmt;
+
+use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -31,11 +34,35 @@ pub struct SpendWindow {
     pub end_unix_seconds: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Deserialize)]
 pub struct SpendHttpRequest {
     pub method: String,
     pub url: String,
     pub headers: Vec<(String, String)>,
+}
+
+impl fmt::Debug for SpendHttpRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SpendHttpRequest")
+            .field("method", &self.method)
+            .field("url", &self.url)
+            .field("headers", &redacted_headers(&self.headers))
+            .finish()
+    }
+}
+
+impl Serialize for SpendHttpRequest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("SpendHttpRequest", 3)?;
+        state.serialize_field("method", &self.method)?;
+        state.serialize_field("url", &self.url)?;
+        state.serialize_field("headers", &redacted_headers(&self.headers))?;
+        state.end()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -84,6 +111,14 @@ pub enum SpendSyncError {
     HttpStatus { status: u16, body: String },
     #[error("spend response parse failed: {source}")]
     Parse { source: serde_json::Error },
+}
+
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum SpendInputError {
+    #[error("invalid Google billing table identifier: {value}")]
+    InvalidGoogleBillingTable { value: String },
+    #[error("invalid Google billing date: {value}")]
+    InvalidGoogleBillingDate { value: String },
 }
 
 pub fn build_openai_cost_request(window: SpendWindow, api_key: &str) -> SpendHttpRequest {
@@ -135,8 +170,15 @@ pub fn sync_anthropic_cost_report(
     parse_anthropic_cost_report(&body).map_err(|source| SpendSyncError::Parse { source })
 }
 
-pub fn build_google_billing_query(table: &str, start_date: &str, end_date: &str) -> String {
-    format!(
+pub fn try_build_google_billing_query(
+    table: &str,
+    start_date: &str,
+    end_date: &str,
+) -> Result<String, SpendInputError> {
+    let table = validate_google_billing_table(table)?;
+    let start_date = validate_google_billing_date(start_date)?;
+    let end_date = validate_google_billing_date(end_date)?;
+    Ok(format!(
         "SELECT service.description, SUM(cost) AS cost, currency \
          FROM {table} \
          WHERE usage_start_time >= TIMESTAMP('{start_date}') \
@@ -144,7 +186,12 @@ pub fn build_google_billing_query(table: &str, start_date: &str, end_date: &str)
            AND (service.description LIKE '%Gemini%' OR sku.description LIKE '%Gemini%' OR service.description LIKE '%Vertex AI%') \
          GROUP BY service.description, currency \
          ORDER BY cost DESC"
-    )
+    ))
+}
+
+pub fn build_google_billing_query(table: &str, start_date: &str, end_date: &str) -> String {
+    try_build_google_billing_query(table, start_date, end_date)
+        .expect("Google billing query inputs must be validated")
 }
 
 pub fn parse_openai_costs_response(body: &str) -> Result<ProviderSpendReport, serde_json::Error> {
@@ -282,7 +329,13 @@ pub fn reconcile_spend(
 }
 
 pub fn execute_spend_request(request: &SpendHttpRequest) -> Result<String, SpendSyncError> {
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|source| SpendSyncError::Request {
+            url: request.url.clone(),
+            source,
+        })?;
     let method =
         reqwest::Method::from_bytes(request.method.as_bytes()).unwrap_or(reqwest::Method::GET);
     let mut builder = client.request(method, &request.url);
@@ -355,6 +408,83 @@ fn field_value(fields: &[Value], index: usize) -> Option<&str> {
         .get(index)
         .and_then(|field| field.get("v"))
         .and_then(Value::as_str)
+}
+
+fn redacted_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            let value = if sensitive_header(name) {
+                "[REDACTED]".to_string()
+            } else {
+                value.clone()
+            };
+            (name.clone(), value)
+        })
+        .collect()
+}
+
+fn sensitive_header(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "authorization" | "proxy-authorization" | "x-api-key"
+    ) || normalized.contains("api-key")
+}
+
+fn validate_google_billing_table(table: &str) -> Result<&str, SpendInputError> {
+    let table = table.trim();
+    let identifier = match table.strip_prefix('`') {
+        Some(without_prefix) => without_prefix.strip_suffix('`').ok_or_else(|| {
+            SpendInputError::InvalidGoogleBillingTable {
+                value: table.to_string(),
+            }
+        })?,
+        None if table.contains('`') => {
+            return Err(SpendInputError::InvalidGoogleBillingTable {
+                value: table.to_string(),
+            });
+        }
+        None => table,
+    };
+
+    if identifier.is_empty()
+        || !identifier
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':'))
+    {
+        return Err(SpendInputError::InvalidGoogleBillingTable {
+            value: table.to_string(),
+        });
+    }
+
+    Ok(table)
+}
+
+fn validate_google_billing_date(date: &str) -> Result<&str, SpendInputError> {
+    let bytes = date.as_bytes();
+    let valid_shape = bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit());
+    if !valid_shape {
+        return Err(SpendInputError::InvalidGoogleBillingDate {
+            value: date.to_string(),
+        });
+    }
+
+    let month = date[5..7].parse::<u32>().unwrap_or_default();
+    let day = date[8..10].parse::<u32>().unwrap_or_default();
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return Err(SpendInputError::InvalidGoogleBillingDate {
+            value: date.to_string(),
+        });
+    }
+
+    Ok(date)
 }
 
 fn url_encode(value: &str) -> String {

@@ -1,8 +1,8 @@
 use modelrouter::{
     BudgetConfig, BudgetState, RequestLogEntry, RouteRequest, Router, RouterConfig, SecretRef,
-    SpendProvider, SpendWindow, build_anthropic_cost_request, build_google_billing_query,
-    build_openai_cost_request, check_api_budget, parse_anthropic_cost_report,
-    parse_google_billing_rows, parse_openai_costs_response, reconcile_spend,
+    SpendProvider, SpendWindow, build_anthropic_cost_request, build_openai_cost_request,
+    check_api_budget, parse_anthropic_cost_report, parse_google_billing_rows,
+    parse_openai_costs_response, reconcile_spend, try_build_google_billing_query,
 };
 
 #[test]
@@ -99,15 +99,32 @@ fn parses_anthropic_cost_report_cent_strings() {
 
 #[test]
 fn google_billing_query_targets_gemini_cost_rows() {
-    let query = build_google_billing_query(
+    let query = try_build_google_billing_query(
         "`billing.gcp_billing_export_v1_ABCDEF`",
         "2026-05-01",
         "2026-06-01",
-    );
+    )
+    .expect("query");
 
     assert!(query.contains("SUM(cost)"));
     assert!(query.contains("usage_start_time"));
     assert!(query.contains("Gemini"));
+}
+
+#[test]
+fn google_billing_query_rejects_injected_table_or_dates() {
+    assert!(
+        try_build_google_billing_query("billing.table; DROP TABLE x", "2026-05-01", "2026-06-01")
+            .is_err()
+    );
+    assert!(
+        try_build_google_billing_query(
+            "`billing.gcp_billing_export_v1_ABCDEF`",
+            "2026-05-01' OR true --",
+            "2026-06-01"
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -189,4 +206,20 @@ fn secret_refs_read_keys_from_environment() {
 
         assert_eq!(secret.resolve().as_deref(), Some("secret-value"));
     });
+}
+
+#[test]
+fn serialized_spend_requests_redact_auth_headers() {
+    let request = build_openai_cost_request(
+        SpendWindow {
+            start_unix_seconds: 1,
+            end_unix_seconds: 2,
+        },
+        "real-secret",
+    );
+
+    let serialized = serde_json::to_string(&request).expect("serialize");
+
+    assert!(!serialized.contains("real-secret"));
+    assert!(serialized.contains("[REDACTED]"));
 }
