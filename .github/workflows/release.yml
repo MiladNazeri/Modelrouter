@@ -6,9 +6,6 @@ on:
       - "v*"
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
 jobs:
   build:
     name: Build ${{ matrix.artifact }}
@@ -27,9 +24,9 @@ jobs:
             artifact: modelrouter-windows
             archive: modelrouter-windows.zip
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.1
       - run: cargo build --release --locked
       - name: Package Unix
         if: runner.os != 'Windows'
@@ -44,7 +41,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item target/release/modelrouter.exe dist/modelrouter.exe
           Compress-Archive -Path dist/modelrouter.exe -DestinationPath "${{ matrix.archive }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.archive }}
