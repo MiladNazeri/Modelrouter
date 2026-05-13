@@ -15,8 +15,8 @@ use crate::{
     RouterConfig, RoutingConfig, ServerConfig, SpendWindow, TaskHint, append_request_log,
     apply_project_profile, build_anthropic_cost_request, build_openai_cost_request, health_report,
     load_config, load_metrics, parse_anthropic_cost_report, parse_openai_costs_response,
-    run_provider_with_usage, serve_mcp, serve_with_log, sync_anthropic_cost_report,
-    sync_openai_costs, try_build_google_billing_query,
+    run_provider_with_usage, run_tui, serve_mcp, serve_with_log_and_config_path,
+    sync_anthropic_cost_report, sync_openai_costs, try_build_google_billing_query,
 };
 
 #[derive(Debug, Parser)]
@@ -26,11 +26,27 @@ use crate::{
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Tui {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        log: Option<PathBuf>,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
+    Chat {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        log: Option<PathBuf>,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
     Init {
         #[arg(long, default_value = "modelrouter.toml")]
         config: PathBuf,
@@ -244,19 +260,27 @@ pub fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Init {
+        None => {
+            let config = load_config_or_default(None)?;
+            run_tui(config, Some(default_log_path()), None)?;
+        }
+        Some(Command::Tui { config, log, cwd }) | Some(Command::Chat { config, log, cwd }) => {
+            let config = load_config_or_default(config)?;
+            run_tui(config, Some(log.unwrap_or_else(default_log_path)), cwd)?;
+        }
+        Some(Command::Init {
             config,
             force,
             local_endpoint,
             auth_token,
-        } => init_config(
+        }) => init_config(
             &config,
             force,
             local_endpoint.as_deref(),
             auth_token.as_deref(),
         )?,
-        Command::Doctor { config, json } => run_doctor(config, json)?,
-        Command::Route {
+        Some(Command::Doctor { config, json }) => run_doctor(config, json)?,
+        Some(Command::Route {
             prompt,
             config,
             prefer,
@@ -267,7 +291,7 @@ pub fn run() -> anyhow::Result<()> {
             json,
             log,
             cwd,
-        } => {
+        }) => {
             let config = load_config_or_default(config)?;
             let config = config_for_cwd(config, cwd.as_deref())?;
             let router = Router::new(config);
@@ -312,7 +336,7 @@ pub fn run() -> anyhow::Result<()> {
                 }
             }
         }
-        Command::Run {
+        Some(Command::Run {
             prompt,
             config,
             prefer,
@@ -322,7 +346,7 @@ pub fn run() -> anyhow::Result<()> {
             hint,
             cwd,
             log,
-        } => {
+        }) => {
             let config = load_config_or_default(config)?;
             let config = config_for_cwd(config, cwd.as_deref())?;
             let router = Router::new(config.clone());
@@ -355,19 +379,20 @@ pub fn run() -> anyhow::Result<()> {
             append_log_result(log.as_deref(), "run", &prompt, &decision, start, &output)?;
             println!("{}", output.output);
         }
-        Command::Serve {
+        Some(Command::Serve {
             config,
             host,
             port,
             log,
-        } => {
+        }) => {
+            let config_path = resolved_config_path(config.clone());
             let config = load_config_or_default(config)?;
             let address = format!("{host}:{port}");
             eprintln!("modelrouter serving on http://{address}");
-            serve_with_log(config, address, log)?;
+            serve_with_log_and_config_path(config, address, log, config_path)?;
         }
-        Command::Daemon { command } => run_daemon(command)?,
-        Command::Mcp { command, config } => {
+        Some(Command::Daemon { command }) => run_daemon(command)?,
+        Some(Command::Mcp { command, config }) => {
             if let Some(command) = command {
                 run_mcp_command(command, config)?;
             } else {
@@ -375,7 +400,7 @@ pub fn run() -> anyhow::Result<()> {
                 serve_mcp(config)?;
             }
         }
-        Command::Health { config, json } => {
+        Some(Command::Health { config, json }) => {
             let config = load_config_or_default(config)?;
             let report = health_report(&config);
             if json {
@@ -389,7 +414,7 @@ pub fn run() -> anyhow::Result<()> {
                 }
             }
         }
-        Command::Spend { command } => run_spend(command)?,
+        Some(Command::Spend { command }) => run_spend(command)?,
     }
 
     Ok(())
@@ -755,6 +780,7 @@ fn run_daemon(command: DaemonCommand) -> anyhow::Result<()> {
             log,
             open,
         } => {
+            let config_path = resolved_config_path(config.clone());
             let config = load_config_or_default(config)?;
             let log = log.unwrap_or_else(default_log_path);
             ensure_parent_dir(&log)?;
@@ -765,7 +791,7 @@ fn run_daemon(command: DaemonCommand) -> anyhow::Result<()> {
             if open {
                 open_url(&url);
             }
-            serve_with_log(config, address, Some(log))?;
+            serve_with_log_and_config_path(config, address, Some(log), config_path)?;
         }
         DaemonCommand::LaunchdPlist {
             config,

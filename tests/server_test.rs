@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use modelrouter::{
-    ProviderConfig, RouterConfig, handle_server_request,
+    ProviderConfig, RouterConfig, handle_server_request, handle_server_request_with_config_path,
     handle_server_request_with_runner_and_report, health_report_with,
 };
 
@@ -270,4 +270,109 @@ fn fs_endpoint_requires_auth_when_server_token_is_configured() {
 
     assert_eq!(response.status, 401);
     assert_eq!(response.body["error"], "unauthorized");
+}
+
+#[test]
+fn config_endpoint_returns_editable_toml_and_profiles() {
+    let config = RouterConfig::default();
+
+    let response = handle_server_request(&config, "GET", "/config", "");
+
+    assert_eq!(response.status, 200);
+    assert!(
+        response.body["toml"]
+            .as_str()
+            .expect("toml")
+            .contains("[routing]")
+    );
+    assert!(response.body["config"]["providers"].is_array());
+    assert!(response.body["config"]["profiles"].is_array());
+}
+
+#[test]
+fn config_validate_rejects_invalid_toml_without_saving() {
+    let config = RouterConfig::default();
+
+    let response = handle_server_request(
+        &config,
+        "POST",
+        "/config/validate",
+        r#"{"toml":"not = [valid"}"#,
+    );
+
+    assert_eq!(response.status, 422);
+    assert_eq!(response.body["valid"], false);
+}
+
+#[test]
+fn config_provider_update_saves_and_reloads_provider_settings() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("modelrouter.toml");
+    let mut config = RouterConfig::default();
+    std::fs::write(&config_path, toml::to_string_pretty(&config).expect("toml"))
+        .expect("write config");
+
+    let response = handle_server_request_with_config_path(
+        &mut config,
+        "POST",
+        "/config/provider",
+        r#"{"provider":"gemini","enabled":false,"model":"gemini-test"}"#,
+        Some(&config_path),
+    );
+
+    assert_eq!(response.status, 200);
+    let gemini = config
+        .provider(modelrouter::ProviderId::Gemini)
+        .expect("gemini");
+    assert!(!gemini.enabled);
+    assert_eq!(gemini.model, "gemini-test");
+    let saved = std::fs::read_to_string(&config_path).expect("saved config");
+    assert!(saved.contains("model = \"gemini-test\""));
+    assert!(dir.path().join("modelrouter.toml.bak").is_file());
+}
+
+#[test]
+fn profile_update_adds_project_profile_and_persists_it() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("modelrouter.toml");
+    let mut config = RouterConfig::default();
+    std::fs::write(&config_path, toml::to_string_pretty(&config).expect("toml"))
+        .expect("write config");
+
+    let response = handle_server_request_with_config_path(
+        &mut config,
+        "POST",
+        "/config/profile",
+        r#"{"name":"new-app","path_contains":"NewApp","default_provider":"claude","code_provider":"codex","reasoning_provider":"claude","local_provider":"local"}"#,
+        Some(&config_path),
+    );
+
+    assert_eq!(response.status, 200);
+    assert!(
+        config
+            .profiles
+            .iter()
+            .any(|profile| profile.name == "new-app")
+    );
+    let saved = std::fs::read_to_string(&config_path).expect("saved config");
+    assert!(saved.contains("name = \"new-app\""));
+}
+
+#[test]
+fn provider_test_endpoint_returns_single_provider_health() {
+    let config = RouterConfig::default();
+    let report = health_report_with(&config, |_| true, |_| true);
+
+    let response = handle_server_request_with_runner_and_report(
+        &config,
+        "POST",
+        "/provider-test",
+        r#"{"provider":"codex"}"#,
+        |_provider: &ProviderConfig, _prompt: &str, _cwd: Option<&Path>| Ok(String::new()),
+        Some(&report),
+    );
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body["provider"], "codex");
+    assert_eq!(response.body["status"], "available");
 }

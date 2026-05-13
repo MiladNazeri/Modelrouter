@@ -36,10 +36,18 @@ modelrouter doctor
 Start the daemon and GUI:
 
 ```sh
-modelrouter daemon start
+modelrouter daemon start --open
 ```
 
 Then open `http://127.0.0.1:8787`.
+
+For the full-screen terminal control plane, run:
+
+```sh
+modelrouter
+```
+
+`modelrouter tui` and `modelrouter chat` are explicit aliases. The one-shot commands below remain available for scripts and MCP clients.
 
 ## What It Routes On
 
@@ -83,6 +91,22 @@ Check what is ready and what needs login/config:
 modelrouter doctor
 modelrouter doctor --json
 ```
+
+Open the terminal UI:
+
+```sh
+modelrouter tui
+```
+
+Useful TUI keys:
+
+- `Tab` / `Shift-Tab`: switch Route, Providers, Config, Projects, History, Help.
+- `F2`: cycle provider preference.
+- `F3`: cycle task hint.
+- `Ctrl-R`: route without running.
+- `Ctrl-X`: run selected route.
+- `Ctrl-L`: refresh health and metrics.
+- `Esc`: quit.
 
 Route without running a model:
 
@@ -163,7 +187,7 @@ Modelrouter tracks spend in three layers:
 OpenAI actual spend request:
 
 ```sh
-OPENAI_ADMIN_KEY=... cargo run -- spend sync-openai \
+OPENAI_ADMIN_KEY=... modelrouter spend sync-openai \
   --start-time 1779676800 \
   --end-time 1782268800
 ```
@@ -171,7 +195,7 @@ OPENAI_ADMIN_KEY=... cargo run -- spend sync-openai \
 Anthropic actual spend request:
 
 ```sh
-ANTHROPIC_ADMIN_KEY=... cargo run -- spend sync-anthropic \
+ANTHROPIC_ADMIN_KEY=... modelrouter spend sync-anthropic \
   --starting-at 2026-05-01T00:00:00Z \
   --ending-at 2026-06-01T00:00:00Z
 ```
@@ -179,7 +203,7 @@ ANTHROPIC_ADMIN_KEY=... cargo run -- spend sync-anthropic \
 Gemini spend is handled through Google Cloud Billing export. Generate the BigQuery SQL with:
 
 ```sh
-cargo run -- spend google-query \
+modelrouter spend google-query \
   --table '`billing.gcp_billing_export_v1_ABCDEF`' \
   --start-date 2026-05-01 \
   --end-date 2026-06-01
@@ -190,10 +214,18 @@ cargo run -- spend google-query \
 Start the local daemon:
 
 ```sh
-modelrouter daemon start
+modelrouter daemon start --open
 ```
 
 By default the daemon binds to `127.0.0.1`. Passing `--host 0.0.0.0` exposes it on the network and should be paired with an auth token and trusted network controls.
+
+The GUI is the browser control plane for:
+
+- Routing and running prompts with route explanations.
+- Enabling/disabling providers, editing models/endpoints, and smoke-testing provider health.
+- Editing, validating, saving, and hot-reloading `modelrouter.toml` with a `.bak` backup.
+- Creating project profiles with the local path picker.
+- Reviewing request history, spend metrics, daemon health, and setup commands.
 
 Generate a macOS LaunchAgent plist:
 
@@ -205,6 +237,8 @@ launchctl load ~/Library/LaunchAgents/com.modelrouter.daemon.plist
 Endpoints:
 
 - `GET /`: local HTML GUI.
+- `GET /config`: editable config TOML plus structured config.
+- `GET /history`: recent sanitized request log entries.
 - `GET /health`: provider health report.
 - `GET /metrics`: rollup from the request log when `--log` is configured.
 - `GET /spend`: alias for spend/request metrics.
@@ -214,6 +248,11 @@ Endpoints:
 - `POST /run`: routing decision plus provider output.
 - `POST /queue`: route and run through the daemon queue.
 - `POST /feedback`: append route feedback next to the request log.
+- `POST /provider-test`: run the selected provider health check.
+- `POST /config/validate`: validate TOML without saving.
+- `POST /config`: save TOML atomically, write a backup, and reload the daemon config.
+- `POST /config/provider`: update one provider and reload config.
+- `POST /config/profile`: add or update one project profile and reload config.
 - `POST /v1/chat/completions`: non-streaming OpenAI-compatible proxy endpoint.
 
 Example route request:

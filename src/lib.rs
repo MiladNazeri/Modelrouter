@@ -13,6 +13,7 @@ mod queue;
 mod router;
 mod server;
 mod spend;
+mod tui;
 
 pub use compression::{CompressedPrompt, compress_prompt};
 pub use config::{
@@ -43,9 +44,10 @@ pub use queue::{ExecutionQueue, QueueJob, QueueStatus};
 pub use router::{RouteDecision, RouteRequest, Router, RouterError};
 pub use server::{
     MAX_REQUEST_BODY_BYTES, ServerResponse, handle_server_request,
+    handle_server_request_with_config_path, handle_server_request_with_config_path_and_runner,
     handle_server_request_with_headers, handle_server_request_with_headers_and_runner,
     handle_server_request_with_runner, handle_server_request_with_runner_and_report, serve,
-    serve_with_log,
+    serve_with_log, serve_with_log_and_config_path,
 };
 pub use spend::{
     BudgetConfig, BudgetDecision, BudgetState, ProviderSpendReport, SecretRef, SpendHttpRequest,
@@ -55,6 +57,7 @@ pub use spend::{
     parse_google_billing_rows, parse_openai_costs_response, reconcile_spend,
     sync_anthropic_cost_report, sync_openai_costs, try_build_google_billing_query,
 };
+pub use tui::{TuiEvent, TuiState, TuiView, run_tui};
 
 pub fn run_cli() -> anyhow::Result<()> {
     cli::run()

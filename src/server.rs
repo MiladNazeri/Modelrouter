@@ -10,10 +10,10 @@ use serde_json::{Value, json};
 use tiny_http::{Header, Response, Server, StatusCode};
 
 use crate::{
-    ExecutionQueue, FeedbackEntry, GUI_HTML, ProviderConfig, ProviderHealth, ProviderId,
-    RequestLogEntry, RouteDecision, RouteRequest, Router, RouterConfig, TaskHint, append_feedback,
-    append_request_log, apply_project_profile, availability_filtered_config, health_report,
-    load_metrics, metrics_from_logs, run_provider,
+    ExecutionQueue, FeedbackEntry, GUI_HTML, ProjectProfile, ProviderConfig, ProviderHealth,
+    ProviderId, RequestLogEntry, RouteDecision, RouteRequest, Router, RouterConfig, TaskHint,
+    append_feedback, append_request_log, apply_project_profile, availability_filtered_config,
+    health_report, load_metrics, metrics_from_logs, run_provider,
 };
 
 pub const MAX_REQUEST_BODY_BYTES: usize = 1_048_576;
@@ -63,10 +63,46 @@ struct OpenAiMessage {
     content: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct ConfigTomlPayload {
+    toml: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ProviderTestPayload {
+    provider: ProviderId,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ProviderUpdatePayload {
+    provider: ProviderId,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    endpoint_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ProfileUpdatePayload {
+    name: String,
+    path_contains: String,
+    #[serde(default)]
+    default_provider: Option<ProviderId>,
+    #[serde(default)]
+    code_provider: Option<ProviderId>,
+    #[serde(default)]
+    reasoning_provider: Option<ProviderId>,
+    #[serde(default)]
+    local_provider: Option<ProviderId>,
+}
+
 struct ServerRuntime<'a> {
     health_report_override: Option<&'a [ProviderHealth]>,
     queue: &'a ExecutionQueue,
     log_path: Option<&'a Path>,
+    config_path: Option<&'a Path>,
     headers: &'a [(&'a str, &'a str)],
 }
 
@@ -131,12 +167,55 @@ pub fn handle_server_request_with_headers_and_runner<F>(
 where
     F: Fn(&ProviderConfig, &str, Option<&Path>) -> Result<String, String>,
 {
+    let mut config = config.clone();
     let queue = ExecutionQueue::default();
     let runtime = ServerRuntime {
         health_report_override: None,
         queue: &queue,
         log_path: None,
+        config_path: None,
         headers,
+    };
+    handle_server_request_with_queue_and_report(&mut config, method, path, body, runner, runtime)
+}
+
+pub fn handle_server_request_with_config_path(
+    config: &mut RouterConfig,
+    method: &str,
+    path: &str,
+    body: &str,
+    config_path: Option<&Path>,
+) -> ServerResponse {
+    handle_server_request_with_config_path_and_runner(
+        config,
+        method,
+        path,
+        body,
+        config_path,
+        |provider, prompt, cwd| {
+            run_provider(provider, prompt, cwd).map_err(|error| error.to_string())
+        },
+    )
+}
+
+pub fn handle_server_request_with_config_path_and_runner<F>(
+    config: &mut RouterConfig,
+    method: &str,
+    path: &str,
+    body: &str,
+    config_path: Option<&Path>,
+    runner: F,
+) -> ServerResponse
+where
+    F: Fn(&ProviderConfig, &str, Option<&Path>) -> Result<String, String>,
+{
+    let queue = ExecutionQueue::default();
+    let runtime = ServerRuntime {
+        health_report_override: None,
+        queue: &queue,
+        log_path: None,
+        config_path,
+        headers: &[],
     };
     handle_server_request_with_queue_and_report(config, method, path, body, runner, runtime)
 }
@@ -152,18 +231,20 @@ pub fn handle_server_request_with_runner_and_report<F>(
 where
     F: Fn(&ProviderConfig, &str, Option<&Path>) -> Result<String, String>,
 {
+    let mut config = config.clone();
     let queue = ExecutionQueue::default();
     let runtime = ServerRuntime {
         health_report_override,
         queue: &queue,
         log_path: None,
+        config_path: None,
         headers: &[],
     };
-    handle_server_request_with_queue_and_report(config, method, path, body, runner, runtime)
+    handle_server_request_with_queue_and_report(&mut config, method, path, body, runner, runtime)
 }
 
 fn handle_server_request_with_queue_and_report<F>(
-    config: &RouterConfig,
+    config: &mut RouterConfig,
     method: &str,
     path: &str,
     body: &str,
@@ -198,7 +279,9 @@ where
     if method == "GET" {
         return match route_path {
             "/" => html_response(200, GUI_HTML),
+            "/config" => config_response(config),
             "/health" => health_response(report),
+            "/history" => history_response(runtime.log_path),
             "/queue" => json_response(200, json!({ "jobs": queue_views(runtime.queue) })),
             "/metrics" => metrics_response(runtime.log_path),
             "/spend" => metrics_response(runtime.log_path),
@@ -217,6 +300,11 @@ where
         "/run" => run_response(config, body, runner, report),
         "/queue" => queue_response(config, body, runner, report, runtime.queue),
         "/feedback" => feedback_response(body, runtime.log_path),
+        "/provider-test" => provider_test_response(body, report),
+        "/config/validate" => config_validate_response(body),
+        "/config" => config_save_response(config, body, runtime.config_path),
+        "/config/provider" => provider_update_response(config, body, runtime.config_path),
+        "/config/profile" => profile_update_response(config, body, runtime.config_path),
         "/v1/chat/completions" => openai_chat_completion_response(config, body, runner, report),
         _ => json_response(404, json!({ "error": "not_found" })),
     }
@@ -233,6 +321,18 @@ pub fn serve_with_log<A>(
     config: RouterConfig,
     address: A,
     log_path: Option<PathBuf>,
+) -> anyhow::Result<()>
+where
+    A: ToSocketAddrs,
+{
+    serve_with_log_and_config_path(config, address, log_path, None)
+}
+
+pub fn serve_with_log_and_config_path<A>(
+    mut config: RouterConfig,
+    address: A,
+    log_path: Option<PathBuf>,
+    config_path: Option<PathBuf>,
 ) -> anyhow::Result<()>
 where
     A: ToSocketAddrs,
@@ -260,10 +360,11 @@ where
             health_report_override: None,
             queue: &queue,
             log_path: log_path.as_deref(),
+            config_path: config_path.as_deref(),
             headers: &header_refs,
         };
         let response = handle_server_request_with_queue_and_report(
-            &config,
+            &mut config,
             request.method().as_str(),
             &path,
             &body,
@@ -380,6 +481,197 @@ fn metrics_response(log_path: Option<&Path>) -> ServerResponse {
         None => metrics_from_logs(&[]),
     };
     json_response(200, json!(metrics))
+}
+
+fn history_response(log_path: Option<&Path>) -> ServerResponse {
+    let Some(path) = log_path else {
+        return json_response(200, json!({ "entries": [] }));
+    };
+    let body = match fs::read_to_string(path) {
+        Ok(body) => body,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return json_response(200, json!({ "entries": [] }));
+        }
+        Err(error) => {
+            return json_response(
+                500,
+                json!({ "error": "history_unreadable", "message": error.to_string() }),
+            );
+        }
+    };
+    let mut entries = body
+        .lines()
+        .filter_map(|line| serde_json::from_str::<RequestLogEntry>(line).ok())
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.timestamp_unix_ms));
+    entries.truncate(50);
+    json_response(200, json!({ "entries": entries }))
+}
+
+fn config_response(config: &RouterConfig) -> ServerResponse {
+    match toml::to_string_pretty(config) {
+        Ok(contents) => json_response(
+            200,
+            json!({
+                "config": config,
+                "toml": contents,
+            }),
+        ),
+        Err(error) => json_response(
+            500,
+            json!({ "error": "config_serialize_failed", "message": error.to_string() }),
+        ),
+    }
+}
+
+fn config_validate_response(body: &str) -> ServerResponse {
+    let payload = match parse_config_toml_payload(body) {
+        Ok(payload) => payload,
+        Err(response) => return response,
+    };
+    match parse_config_toml(&payload.toml) {
+        Ok(_) => json_response(200, json!({ "valid": true })),
+        Err(response) => response,
+    }
+}
+
+fn config_save_response(
+    config: &mut RouterConfig,
+    body: &str,
+    config_path: Option<&Path>,
+) -> ServerResponse {
+    let payload = match parse_config_toml_payload(body) {
+        Ok(payload) => payload,
+        Err(response) => return response,
+    };
+    let parsed = match parse_config_toml(&payload.toml) {
+        Ok(parsed) => parsed,
+        Err(response) => return response,
+    };
+    match persist_config(config, parsed, config_path) {
+        Ok(save) => json_response(200, save),
+        Err(response) => response,
+    }
+}
+
+fn provider_test_response(body: &str, report: &[ProviderHealth]) -> ServerResponse {
+    let payload = match serde_json::from_str::<ProviderTestPayload>(body) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return json_response(
+                400,
+                json!({ "error": "invalid_json", "message": error.to_string() }),
+            );
+        }
+    };
+    match report
+        .iter()
+        .find(|provider| provider.provider == payload.provider)
+    {
+        Some(provider) => json_response(200, json!(sanitize_health(provider.clone()))),
+        None => json_response(
+            404,
+            json!({ "error": "provider_not_found", "provider": payload.provider }),
+        ),
+    }
+}
+
+fn provider_update_response(
+    config: &mut RouterConfig,
+    body: &str,
+    config_path: Option<&Path>,
+) -> ServerResponse {
+    let payload = match serde_json::from_str::<ProviderUpdatePayload>(body) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return json_response(
+                400,
+                json!({ "error": "invalid_json", "message": error.to_string() }),
+            );
+        }
+    };
+    let mut next = config.clone();
+    let Some(provider) = next
+        .providers
+        .iter_mut()
+        .find(|provider| provider.id == payload.provider)
+    else {
+        return json_response(
+            404,
+            json!({ "error": "provider_not_found", "provider": payload.provider }),
+        );
+    };
+    if let Some(enabled) = payload.enabled {
+        provider.enabled = enabled;
+    }
+    if let Some(model) = payload.model.filter(|model| !model.trim().is_empty()) {
+        provider.model = model;
+    }
+    if payload.endpoint_url.is_some() {
+        provider.endpoint_url = payload
+            .endpoint_url
+            .and_then(|value| (!value.trim().is_empty()).then_some(value));
+    }
+    if let Err(error) = next.validate() {
+        return json_response(
+            422,
+            json!({ "error": "config_invalid", "message": error.to_string() }),
+        );
+    }
+    match persist_config(config, next, config_path) {
+        Ok(save) => json_response(200, save),
+        Err(response) => response,
+    }
+}
+
+fn profile_update_response(
+    config: &mut RouterConfig,
+    body: &str,
+    config_path: Option<&Path>,
+) -> ServerResponse {
+    let payload = match serde_json::from_str::<ProfileUpdatePayload>(body) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return json_response(
+                400,
+                json!({ "error": "invalid_json", "message": error.to_string() }),
+            );
+        }
+    };
+    if payload.name.trim().is_empty() || payload.path_contains.trim().is_empty() {
+        return json_response(
+            422,
+            json!({ "error": "profile_invalid", "message": "name and path_contains are required" }),
+        );
+    }
+    let mut next = config.clone();
+    let profile = ProjectProfile {
+        name: payload.name,
+        path_contains: payload.path_contains,
+        default_provider: payload.default_provider,
+        code_provider: payload.code_provider,
+        reasoning_provider: payload.reasoning_provider,
+        local_provider: payload.local_provider,
+    };
+    if let Some(existing) = next
+        .profiles
+        .iter_mut()
+        .find(|existing| existing.name == profile.name)
+    {
+        *existing = profile;
+    } else {
+        next.profiles.push(profile);
+    }
+    if let Err(error) = next.validate() {
+        return json_response(
+            422,
+            json!({ "error": "config_invalid", "message": error.to_string() }),
+        );
+    }
+    match persist_config(config, next, config_path) {
+        Ok(save) => json_response(200, save),
+        Err(response) => response,
+    }
 }
 
 fn fs_response(query: Option<&str>) -> ServerResponse {
@@ -618,6 +910,122 @@ fn parse_payload(body: &str) -> Result<RoutePayload, ServerResponse> {
     })
 }
 
+fn parse_config_toml_payload(body: &str) -> Result<ConfigTomlPayload, ServerResponse> {
+    serde_json::from_str::<ConfigTomlPayload>(body).map_err(|error| {
+        json_response(
+            400,
+            json!({ "error": "invalid_json", "message": error.to_string() }),
+        )
+    })
+}
+
+fn parse_config_toml(contents: &str) -> Result<RouterConfig, ServerResponse> {
+    let config = match toml::from_str::<RouterConfig>(contents) {
+        Ok(config) => config,
+        Err(error) => {
+            return Err(json_response(
+                422,
+                json!({
+                    "error": "config_invalid",
+                    "message": error.to_string(),
+                    "valid": false,
+                }),
+            ));
+        }
+    };
+    if let Err(error) = config.validate() {
+        return Err(json_response(
+            422,
+            json!({
+                "error": "config_invalid",
+                "message": error.to_string(),
+                "valid": false,
+            }),
+        ));
+    }
+    Ok(config)
+}
+
+fn persist_config(
+    config: &mut RouterConfig,
+    next: RouterConfig,
+    config_path: Option<&Path>,
+) -> Result<Value, ServerResponse> {
+    let Some(path) = config_path else {
+        return Err(json_response(
+            409,
+            json!({ "error": "config_path_missing", "message": "Start the daemon with --config to save config changes." }),
+        ));
+    };
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        return Err(json_response(
+            500,
+            json!({ "error": "config_save_failed", "message": error.to_string() }),
+        ));
+    }
+    let backup_path = backup_path(path);
+    if path.is_file()
+        && let Err(error) = fs::copy(path, &backup_path)
+    {
+        return Err(json_response(
+            500,
+            json!({ "error": "config_backup_failed", "message": error.to_string() }),
+        ));
+    }
+    let contents = match toml::to_string_pretty(&next) {
+        Ok(contents) => contents,
+        Err(error) => {
+            return Err(json_response(
+                500,
+                json!({ "error": "config_serialize_failed", "message": error.to_string() }),
+            ));
+        }
+    };
+    let temp_path = temp_config_path(path);
+    if let Err(error) = fs::write(&temp_path, contents) {
+        return Err(json_response(
+            500,
+            json!({ "error": "config_save_failed", "message": error.to_string() }),
+        ));
+    }
+    if let Err(error) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(json_response(
+            500,
+            json!({ "error": "config_save_failed", "message": error.to_string() }),
+        ));
+    }
+    *config = next;
+    Ok(json!({
+        "backup_path": backup_path.display().to_string(),
+        "config": config,
+        "path": path.display().to_string(),
+        "reloaded": true,
+        "saved": true,
+        "toml": toml::to_string_pretty(config).unwrap_or_default(),
+    }))
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map_or_else(|| "bak".to_string(), |extension| format!("{extension}.bak"));
+    path.with_extension(extension)
+}
+
+fn temp_config_path(path: &Path) -> PathBuf {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map_or_else(|| "tmp".to_string(), |extension| format!("{extension}.tmp"));
+    path.with_extension(extension)
+}
+
 fn build_route_request(payload: &RoutePayload) -> RouteRequest {
     let mut request = RouteRequest::new(payload.prompt.clone());
     if let Some(provider) = payload.prefer {
@@ -665,14 +1073,16 @@ fn health_response(report: &[ProviderHealth]) -> ServerResponse {
     let sanitized = report
         .iter()
         .cloned()
-        .map(|mut provider| {
-            if provider.check.starts_with("http:") {
-                provider.check = "http:[redacted]".to_string();
-            }
-            provider
-        })
+        .map(sanitize_health)
         .collect::<Vec<_>>();
     json_response(200, json!({ "providers": sanitized }))
+}
+
+fn sanitize_health(mut provider: ProviderHealth) -> ProviderHealth {
+    if provider.check.starts_with("http:") {
+        provider.check = "http:[redacted]".to_string();
+    }
+    provider
 }
 
 fn queue_views(queue: &ExecutionQueue) -> Vec<serde_json::Value> {

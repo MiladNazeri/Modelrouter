@@ -60,6 +60,8 @@ fn help_lists_mcp_and_health_commands() {
         .arg("--help")
         .assert()
         .success()
+        .stdout(predicate::str::contains("tui"))
+        .stdout(predicate::str::contains("chat"))
         .stdout(predicate::str::contains("init"))
         .stdout(predicate::str::contains("doctor"))
         .stdout(predicate::str::contains("daemon"))
