@@ -145,6 +145,12 @@ fn gui_endpoint_returns_html() {
             .contains("modelrouter doctor")
     );
     assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
+            .contains("Browse")
+    );
+    assert!(
         !response.body["html"]
             .as_str()
             .expect("html")
@@ -233,4 +239,35 @@ fn configured_auth_token_accepts_matching_bearer_token() {
 
     assert_eq!(response.status, 200);
     assert_eq!(response.body["output"], "authorized: Summarize this note.");
+}
+
+#[test]
+fn fs_endpoint_lists_directory_entries_for_picker() {
+    let config = RouterConfig::default();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let child = dir.path().join("child-project");
+    std::fs::create_dir(&child).expect("child dir");
+    std::fs::write(dir.path().join("README.md"), "hello").expect("file");
+    let path = dir.path().to_str().expect("utf8 path").replace('/', "%2F");
+    let canonical = std::fs::canonicalize(dir.path()).expect("canonical temp dir");
+
+    let response = handle_server_request(&config, "GET", &format!("/fs?path={path}"), "");
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body["path"], canonical.display().to_string());
+    assert_eq!(response.body["entries"][0]["name"], "child-project");
+    assert_eq!(response.body["entries"][0]["kind"], "directory");
+    assert_eq!(response.body["entries"][1]["name"], "README.md");
+    assert_eq!(response.body["entries"][1]["kind"], "file");
+}
+
+#[test]
+fn fs_endpoint_requires_auth_when_server_token_is_configured() {
+    let mut config = RouterConfig::default();
+    config.server.auth_token = Some("secret-token".to_string());
+
+    let response = handle_server_request(&config, "GET", "/fs", "");
+
+    assert_eq!(response.status, 401);
+    assert_eq!(response.body["error"], "unauthorized");
 }

@@ -1,4 +1,5 @@
 use std::{
+    env, fs,
     io::Read,
     net::ToSocketAddrs,
     path::{Path, PathBuf},
@@ -179,7 +180,9 @@ where
         );
     }
 
-    if !authorized(config, runtime.headers, path) {
+    let (route_path, query) = split_path_and_query(path);
+
+    if !authorized(config, runtime.headers, route_path) {
         return json_response(401, json!({ "error": "unauthorized" }));
     }
 
@@ -193,13 +196,14 @@ where
     };
 
     if method == "GET" {
-        return match path {
+        return match route_path {
             "/" => html_response(200, GUI_HTML),
             "/health" => health_response(report),
             "/queue" => json_response(200, json!({ "jobs": queue_views(runtime.queue) })),
             "/metrics" => metrics_response(runtime.log_path),
             "/spend" => metrics_response(runtime.log_path),
             "/budget" => json_response(200, json!(config.budget)),
+            "/fs" => fs_response(query),
             _ => json_response(404, json!({ "error": "not_found" })),
         };
     }
@@ -208,7 +212,7 @@ where
         return json_response(405, json!({ "error": "method_not_allowed" }));
     }
 
-    match path {
+    match route_path {
         "/route" => route_response(config, body, report),
         "/run" => run_response(config, body, runner, report),
         "/queue" => queue_response(config, body, runner, report, runtime.queue),
@@ -242,10 +246,7 @@ where
             .as_reader()
             .take(u64::try_from(MAX_REQUEST_BODY_BYTES + 1).unwrap_or(u64::MAX));
         reader.read_to_string(&mut body)?;
-        let path = request
-            .url()
-            .split_once('?')
-            .map_or_else(|| request.url(), |(path, _query)| path);
+        let path = request.url().to_string();
         let headers = request
             .headers()
             .iter()
@@ -264,7 +265,7 @@ where
         let response = handle_server_request_with_queue_and_report(
             &config,
             request.method().as_str(),
-            path,
+            &path,
             &body,
             |provider, prompt, cwd| {
                 run_provider(provider, prompt, cwd).map_err(|error| error.to_string())
@@ -272,7 +273,7 @@ where
             runtime,
         );
         if let Some(log_path) = log_path.as_deref() {
-            log_response(log_path, path, &body, &response);
+            log_response(log_path, &path, &body, &response);
         }
         request.respond(to_tiny_response(response))?;
     }
@@ -379,6 +380,84 @@ fn metrics_response(log_path: Option<&Path>) -> ServerResponse {
         None => metrics_from_logs(&[]),
     };
     json_response(200, json!(metrics))
+}
+
+fn fs_response(query: Option<&str>) -> ServerResponse {
+    let requested = query_value(query, "path")
+        .filter(|path| !path.trim().is_empty())
+        .map_or_else(
+            || env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            PathBuf::from,
+        );
+    let requested = expand_home_path(&requested);
+    let path = match fs::canonicalize(&requested) {
+        Ok(path) => path,
+        Err(error) => {
+            return json_response(
+                404,
+                json!({ "error": "path_not_found", "message": error.to_string() }),
+            );
+        }
+    };
+
+    if !path.is_dir() {
+        return json_response(
+            422,
+            json!({ "error": "not_a_directory", "path": path.display().to_string() }),
+        );
+    }
+
+    let mut entries = match fs::read_dir(&path) {
+        Ok(entries) => entries
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let file_type = entry.file_type().ok()?;
+                let kind = if file_type.is_dir() {
+                    "directory"
+                } else if file_type.is_file() {
+                    "file"
+                } else {
+                    return None;
+                };
+                Some(json!({
+                    "kind": kind,
+                    "name": entry.file_name().to_string_lossy(),
+                    "path": entry.path().display().to_string(),
+                }))
+            })
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            return json_response(
+                403,
+                json!({ "error": "directory_unreadable", "message": error.to_string() }),
+            );
+        }
+    };
+    entries.sort_by(|left, right| {
+        let left_kind = left["kind"].as_str().unwrap_or_default();
+        let right_kind = right["kind"].as_str().unwrap_or_default();
+        left_kind.cmp(right_kind).then_with(|| {
+            left["name"]
+                .as_str()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .cmp(
+                    &right["name"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_ascii_lowercase(),
+                )
+        })
+    });
+
+    json_response(
+        200,
+        json!({
+            "entries": entries,
+            "parent": path.parent().map(|parent| parent.display().to_string()),
+            "path": path.display().to_string(),
+        }),
+    )
 }
 
 fn feedback_response(body: &str, log_path: Option<&Path>) -> ServerResponse {
@@ -618,6 +697,73 @@ fn authorized(config: &RouterConfig, headers: &[(&str, &str)], path: &str) -> bo
     headers
         .iter()
         .any(|(name, value)| name.eq_ignore_ascii_case("authorization") && value.trim() == expected)
+}
+
+fn split_path_and_query(path: &str) -> (&str, Option<&str>) {
+    path.split_once('?')
+        .map_or((path, None), |(path, query)| (path, Some(query)))
+}
+
+fn query_value(query: Option<&str>, key: &str) -> Option<String> {
+    query?.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        (percent_decode(name) == key).then(|| percent_decode(value))
+    })
+}
+
+fn percent_decode(value: &str) -> String {
+    let mut decoded = Vec::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                if let (Some(high), Some(low)) =
+                    (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+                {
+                    decoded.push((high << 4) | low);
+                    index += 3;
+                } else {
+                    decoded.push(bytes[index]);
+                    index += 1;
+                }
+            }
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn expand_home_path(path: &Path) -> PathBuf {
+    let Some(raw_path) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    if raw_path == "~" {
+        return env::var("HOME").map_or_else(|_| path.to_path_buf(), PathBuf::from);
+    }
+    if let Some(rest) = raw_path.strip_prefix("~/") {
+        return env::var("HOME").map_or_else(
+            |_| path.to_path_buf(),
+            |home| PathBuf::from(home).join(rest),
+        );
+    }
+    path.to_path_buf()
 }
 
 fn to_tiny_response(response: ServerResponse) -> Response<std::io::Cursor<Vec<u8>>> {

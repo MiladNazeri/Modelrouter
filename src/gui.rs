@@ -46,6 +46,61 @@ pub const GUI_HTML: &str = r#"<!doctype html>
     textarea { min-height: 180px; resize: vertical; }
     .row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 12px 0; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .path-picker-control { display: flex; gap: 8px; }
+    .path-picker-control input { min-width: 0; }
+    .path-picker-control button { flex: 0 0 auto; }
+    .picker {
+      margin: 12px 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #0d0f13;
+      overflow: hidden;
+    }
+    .picker[hidden] { display: none; }
+    .picker-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    .picker-current {
+      flex: 1;
+      min-width: 0;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .path-entries {
+      max-height: 260px;
+      overflow: auto;
+      padding: 6px;
+    }
+    .path-entry {
+      display: grid;
+      grid-template-columns: 72px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border-color: transparent;
+      padding: 7px 8px;
+    }
+    .path-entry:hover { background: #171a20; }
+    .path-entry[disabled] {
+      cursor: default;
+      color: var(--muted);
+    }
+    .path-entry[disabled]:hover { border-color: transparent; }
+    .path-kind { color: var(--muted); }
+    .path-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     button {
       border: 1px solid var(--line);
       border-radius: 6px;
@@ -124,8 +179,20 @@ pub const GUI_HTML: &str = r#"<!doctype html>
           </div>
           <div>
             <label for="cwd">Working directory</label>
-            <input id="cwd" placeholder="/path/to/project">
+            <div class="path-picker-control">
+              <input id="cwd" placeholder="/path/to/project">
+              <button id="browsePath" type="button">Browse</button>
+            </div>
           </div>
+        </div>
+        <div id="pathPicker" class="picker" hidden>
+          <div class="picker-bar">
+            <button id="parentPath" type="button">Up</button>
+            <span id="currentPath" class="picker-current"></span>
+            <button id="usePath" type="button">Use</button>
+            <button id="closePath" type="button">Close</button>
+          </div>
+          <div id="pathEntries" class="path-entries"></div>
         </div>
         <div class="actions">
           <button class="primary" id="routeBtn" type="button">Route</button>
@@ -153,6 +220,11 @@ pub const GUI_HTML: &str = r#"<!doctype html>
   <script>
     const output = document.getElementById('output');
     const health = document.getElementById('health');
+    const cwdInput = document.getElementById('cwd');
+    const pathPicker = document.getElementById('pathPicker');
+    const currentPath = document.getElementById('currentPath');
+    const pathEntries = document.getElementById('pathEntries');
+    let selectedPath = '';
     function payload() {
       const body = { prompt: document.getElementById('prompt').value };
       for (const id of ['prefer', 'hint', 'cwd']) {
@@ -170,6 +242,45 @@ pub const GUI_HTML: &str = r#"<!doctype html>
       });
       const json = await res.json();
       output.textContent = JSON.stringify(json, null, 2);
+    }
+    async function loadPath(path) {
+      pathPicker.hidden = false;
+      pathEntries.replaceChildren(document.createTextNode('Loading...'));
+      const url = path ? `/fs?path=${encodeURIComponent(path)}` : '/fs';
+      const res = await fetch(url);
+      const json = await res.json();
+      if (!res.ok) {
+        pathEntries.replaceChildren(document.createTextNode(json.message || json.error || 'Unable to read path.'));
+        return;
+      }
+      selectedPath = json.path;
+      currentPath.textContent = json.path;
+      const rows = json.entries.map(entry => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'path-entry';
+        if (entry.kind !== 'directory') button.disabled = true;
+        const kind = document.createElement('span');
+        kind.className = 'path-kind';
+        kind.textContent = entry.kind === 'directory' ? 'folder' : 'file';
+        const name = document.createElement('span');
+        name.className = 'path-name';
+        name.textContent = entry.name;
+        button.append(kind, name);
+        if (entry.kind === 'directory') {
+          button.onclick = () => loadPath(entry.path);
+        }
+        return button;
+      });
+      if (rows.length === 0) {
+        pathEntries.replaceChildren(document.createTextNode('No entries.'));
+      } else {
+        pathEntries.replaceChildren(...rows);
+      }
+      document.getElementById('parentPath').disabled = !json.parent;
+      document.getElementById('parentPath').onclick = () => {
+        if (json.parent) loadPath(json.parent);
+      };
     }
     async function loadHealth() {
       const res = await fetch('/health');
@@ -194,6 +305,14 @@ pub const GUI_HTML: &str = r#"<!doctype html>
     document.getElementById('runBtn').onclick = () => post('/run');
     document.getElementById('queueBtn').onclick = () => post('/queue');
     document.getElementById('refreshHealth').onclick = loadHealth;
+    document.getElementById('browsePath').onclick = () => loadPath(cwdInput.value.trim());
+    document.getElementById('usePath').onclick = () => {
+      cwdInput.value = selectedPath;
+      pathPicker.hidden = true;
+    };
+    document.getElementById('closePath').onclick = () => {
+      pathPicker.hidden = true;
+    };
     loadHealth();
   </script>
 </body>
