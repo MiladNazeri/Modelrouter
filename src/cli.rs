@@ -849,6 +849,11 @@ fn launchd_plist(
     let cwd = env::current_dir()?;
     let stdout = log.with_file_name("modelrouter-launchd.out.log");
     let stderr = log.with_file_name("modelrouter-launchd.err.log");
+    let path_env = env::var("PATH").unwrap_or_else(|_| {
+        "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string()
+    });
+    let home_env = env::var("HOME").unwrap_or_default();
+    let user_env = env::var("USER").unwrap_or_default();
     Ok(format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -872,6 +877,15 @@ fn launchd_plist(
   </array>
   <key>WorkingDirectory</key>
   <string>{}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>{}</string>
+    <key>HOME</key>
+    <string>{}</string>
+    <key>USER</key>
+    <string>{}</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -889,6 +903,9 @@ fn launchd_plist(
         port,
         xml_escape(&log.display().to_string()),
         xml_escape(&cwd.display().to_string()),
+        xml_escape(&path_env),
+        xml_escape(&home_env),
+        xml_escape(&user_env),
         xml_escape(&stdout.display().to_string()),
         xml_escape(&stderr.display().to_string()),
     ))

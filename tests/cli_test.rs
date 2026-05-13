@@ -160,6 +160,8 @@ fn daemon_launchd_plist_prints_launch_agent() {
         .success()
         .stdout(predicate::str::contains("com.modelrouter.daemon"))
         .stdout(predicate::str::contains("ProgramArguments"))
+        .stdout(predicate::str::contains("EnvironmentVariables"))
+        .stdout(predicate::str::contains("<key>PATH</key>"))
         .stdout(predicate::str::contains("daemon"))
         .stdout(predicate::str::contains("start"));
 }
