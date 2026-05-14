@@ -202,7 +202,7 @@ pub const GUI_HTML: &str = r#"<!doctype html>
               <label for="cwd">Working directory</label>
               <div class="path-picker-control">
                 <input id="cwd" placeholder="/path/to/project">
-                <button id="browsePath" type="button">Browse</button>
+                <button id="browsePath" type="button">Choose folder</button>
               </div>
             </div>
           </div>
@@ -278,7 +278,7 @@ pub const GUI_HTML: &str = r#"<!doctype html>
           <label for="profilePath">Path contains</label>
           <div class="path-picker-control">
             <input id="profilePath" placeholder="MiladApp">
-            <button id="browseProfilePath" type="button">Browse</button>
+            <button id="browseProfilePath" type="button">Choose folder</button>
           </div>
           <div class="compact-row">
             <div><label for="profileDefault">Default</label><select id="profileDefault"></select></div>
@@ -435,6 +435,22 @@ pub const GUI_HTML: &str = r#"<!doctype html>
         };
       } catch (error) {
         pathEntries.replaceChildren(document.createTextNode(error.message || error.error || 'Unable to read path.'));
+      }
+    }
+
+    async function chooseDirectory(currentPath, onUse) {
+      try {
+        const json = await api('/fs/pick-directory', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}'
+        });
+        if (!json.cancelled && json.path) {
+          onUse(json.path);
+          pathPicker.hidden = true;
+        }
+      } catch (_error) {
+        await loadPath(currentPath, onUse);
       }
     }
 
@@ -662,8 +678,8 @@ pub const GUI_HTML: &str = r#"<!doctype html>
     document.getElementById('routeBtn').onclick = () => post('/route');
     document.getElementById('runBtn').onclick = () => post('/run');
     document.getElementById('queueBtn').onclick = () => post('/queue');
-    document.getElementById('browsePath').onclick = () => loadPath(cwdInput.value.trim(), value => { cwdInput.value = value; });
-    document.getElementById('browseProfilePath').onclick = () => loadPath('', value => { document.getElementById('profilePath').value = value; });
+    document.getElementById('browsePath').onclick = () => chooseDirectory(cwdInput.value.trim(), value => { cwdInput.value = value; });
+    document.getElementById('browseProfilePath').onclick = () => chooseDirectory('', value => { document.getElementById('profilePath').value = value; });
     document.getElementById('closePath').onclick = () => { pathPicker.hidden = true; };
     document.getElementById('refreshAll').onclick = refreshAll;
     document.getElementById('loadConfig').onclick = loadConfig;

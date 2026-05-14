@@ -2,6 +2,7 @@ use std::path::Path;
 
 use modelrouter::{
     ProviderConfig, RouterConfig, handle_server_request, handle_server_request_with_config_path,
+    handle_server_request_with_directory_picker,
     handle_server_request_with_headers_runner_and_report,
     handle_server_request_with_runner_and_report, health_report_with,
 };
@@ -149,7 +150,13 @@ fn gui_endpoint_returns_html() {
         response.body["html"]
             .as_str()
             .expect("html")
-            .contains("Browse")
+            .contains("Choose folder")
+    );
+    assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
+            .contains("/fs/pick-directory")
     );
     assert!(
         !response.body["html"]
@@ -265,11 +272,58 @@ fn fs_endpoint_lists_directory_entries_for_picker() {
 }
 
 #[test]
+fn fs_pick_directory_endpoint_returns_native_selection() {
+    let config = RouterConfig::default();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let canonical = std::fs::canonicalize(dir.path()).expect("canonical temp dir");
+
+    let response = handle_server_request_with_directory_picker(
+        &config,
+        "POST",
+        "/fs/pick-directory",
+        "{}",
+        || Ok(Some(dir.path().to_path_buf())),
+    );
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body["cancelled"], false);
+    assert_eq!(response.body["path"], canonical.display().to_string());
+}
+
+#[test]
+fn fs_pick_directory_endpoint_reports_cancelled_selection() {
+    let config = RouterConfig::default();
+
+    let response = handle_server_request_with_directory_picker(
+        &config,
+        "POST",
+        "/fs/pick-directory",
+        "{}",
+        || Ok(None),
+    );
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body["cancelled"], true);
+    assert!(response.body["path"].is_null());
+}
+
+#[test]
 fn fs_endpoint_requires_auth_when_server_token_is_configured() {
     let mut config = RouterConfig::default();
     config.server.auth_token = Some("secret-token".to_string());
 
     let response = handle_server_request(&config, "GET", "/fs", "");
+
+    assert_eq!(response.status, 401);
+    assert_eq!(response.body["error"], "unauthorized");
+}
+
+#[test]
+fn fs_pick_directory_endpoint_requires_auth_when_server_token_is_configured() {
+    let mut config = RouterConfig::default();
+    config.server.auth_token = Some("secret-token".to_string());
+
+    let response = handle_server_request(&config, "POST", "/fs/pick-directory", "{}");
 
     assert_eq!(response.status, 401);
     assert_eq!(response.body["error"], "unauthorized");

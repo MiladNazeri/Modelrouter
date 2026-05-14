@@ -3,6 +3,7 @@ use std::{
     io::Read,
     net::ToSocketAddrs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use serde::{Deserialize, Serialize};
@@ -104,6 +105,7 @@ struct ServerRuntime<'a> {
     log_path: Option<&'a Path>,
     config_path: Option<&'a Path>,
     headers: &'a [(&'a str, &'a str)],
+    directory_picker: &'a dyn Fn() -> Result<Option<PathBuf>, String>,
 }
 
 pub fn handle_server_request(
@@ -175,6 +177,7 @@ where
         log_path: None,
         config_path: None,
         headers,
+        directory_picker: &native_directory_picker,
     };
     handle_server_request_with_queue_and_report(&mut config, method, path, body, runner, runtime)
 }
@@ -216,6 +219,7 @@ where
         log_path: None,
         config_path,
         headers: &[],
+        directory_picker: &native_directory_picker,
     };
     handle_server_request_with_queue_and_report(config, method, path, body, runner, runtime)
 }
@@ -239,6 +243,7 @@ where
         log_path: None,
         config_path: None,
         headers: &[],
+        directory_picker: &native_directory_picker,
     };
     handle_server_request_with_queue_and_report(&mut config, method, path, body, runner, runtime)
 }
@@ -263,8 +268,41 @@ where
         log_path: None,
         config_path: None,
         headers,
+        directory_picker: &native_directory_picker,
     };
     handle_server_request_with_queue_and_report(&mut config, method, path, body, runner, runtime)
+}
+
+pub fn handle_server_request_with_directory_picker<P>(
+    config: &RouterConfig,
+    method: &str,
+    path: &str,
+    body: &str,
+    picker: P,
+) -> ServerResponse
+where
+    P: Fn() -> Result<Option<PathBuf>, String>,
+{
+    let mut config = config.clone();
+    let queue = ExecutionQueue::default();
+    let runtime = ServerRuntime {
+        health_report_override: None,
+        queue: &queue,
+        log_path: None,
+        config_path: None,
+        headers: &[],
+        directory_picker: &picker,
+    };
+    handle_server_request_with_queue_and_report(
+        &mut config,
+        method,
+        path,
+        body,
+        |provider, prompt, cwd| {
+            run_provider(provider, prompt, cwd).map_err(|error| error.to_string())
+        },
+        runtime,
+    )
 }
 
 fn handle_server_request_with_queue_and_report<F>(
@@ -324,6 +362,7 @@ where
         "/run" => run_response(config, body, runner, report),
         "/queue" => queue_response(config, body, runner, report, runtime.queue),
         "/feedback" => feedback_response(body, runtime.log_path),
+        "/fs/pick-directory" => pick_directory_response(runtime.directory_picker),
         "/provider-test" => provider_test_response(body, report),
         "/config/validate" => config_validate_response(body),
         "/config" => config_save_response(config, body, runtime.config_path),
@@ -386,6 +425,7 @@ where
             log_path: log_path.as_deref(),
             config_path: config_path.as_deref(),
             headers: &header_refs,
+            directory_picker: &native_directory_picker,
         };
         let response = handle_server_request_with_queue_and_report(
             &mut config,
@@ -771,6 +811,42 @@ fn fs_response(query: Option<&str>) -> ServerResponse {
         json!({
             "entries": entries,
             "parent": path.parent().map(|parent| parent.display().to_string()),
+            "path": path.display().to_string(),
+        }),
+    )
+}
+
+fn pick_directory_response(picker: &dyn Fn() -> Result<Option<PathBuf>, String>) -> ServerResponse {
+    let selected = match picker() {
+        Ok(Some(path)) => path,
+        Ok(None) => return json_response(200, json!({ "cancelled": true, "path": null })),
+        Err(message) => {
+            return json_response(
+                501,
+                json!({ "error": "directory_picker_unavailable", "message": message }),
+            );
+        }
+    };
+    let selected = expand_home_path(&selected);
+    let path = match fs::canonicalize(&selected) {
+        Ok(path) => path,
+        Err(error) => {
+            return json_response(
+                422,
+                json!({ "error": "path_not_found", "message": error.to_string() }),
+            );
+        }
+    };
+    if !path.is_dir() {
+        return json_response(
+            422,
+            json!({ "error": "not_a_directory", "path": path.display().to_string() }),
+        );
+    }
+    json_response(
+        200,
+        json!({
+            "cancelled": false,
             "path": path.display().to_string(),
         }),
     )
@@ -1198,6 +1274,78 @@ fn expand_home_path(path: &Path) -> PathBuf {
         );
     }
     path.to_path_buf()
+}
+
+fn native_directory_picker() -> Result<Option<PathBuf>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = Command::new("osascript");
+        command.args([
+            "-e",
+            r#"POSIX path of (choose folder with prompt "Choose a directory for Modelrouter")"#,
+        ]);
+        run_directory_picker_command(&mut command)
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if env::var_os("DISPLAY").is_none() && env::var_os("WAYLAND_DISPLAY").is_none() {
+            return Err(
+                "No desktop session is available for a native directory picker.".to_string(),
+            );
+        }
+        let mut command = Command::new("zenity");
+        command.args([
+            "--file-selection",
+            "--directory",
+            "--title=Choose a directory for Modelrouter",
+        ]);
+        run_directory_picker_command(&mut command)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = 'Choose a directory for Modelrouter'
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  Write-Output $dialog.SelectedPath
+}
+"#;
+        let mut command = Command::new("powershell");
+        command.args(["-NoProfile", "-Command", script]);
+        run_directory_picker_command(&mut command)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        Err("Native directory picker is not supported on this platform.".to_string())
+    }
+}
+
+fn run_directory_picker_command(command: &mut Command) -> Result<Option<PathBuf>, String> {
+    let output = command
+        .output()
+        .map_err(|error| format!("Unable to open native directory picker: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let selected = stdout.trim();
+    if output.status.success() {
+        return if selected.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(PathBuf::from(selected)))
+        };
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    if selected.is_empty() && (stderr.is_empty() || stderr.to_ascii_lowercase().contains("cancel"))
+    {
+        Ok(None)
+    } else {
+        Err(format!("Native directory picker failed: {stderr}"))
+    }
 }
 
 fn to_tiny_response(response: ServerResponse) -> Response<std::io::Cursor<Vec<u8>>> {
