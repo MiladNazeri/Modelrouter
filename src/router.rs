@@ -508,22 +508,7 @@ fn task_profile(
         .unwrap_or_else(|| infer_task_hint(&normalized, input_tokens));
     let codebase_editing = classification
         .and_then(|classification| classification.repo)
-        .unwrap_or_else(|| {
-            contains_any(
-                &normalized,
-                &[
-                    "repo",
-                    "codebase",
-                    "edit",
-                    "fix",
-                    "failing",
-                    "refactor",
-                    "files",
-                    "parser",
-                    "pull request",
-                ],
-            )
-        });
+        .unwrap_or_else(|| is_codebase_work_request(&normalized));
     let tests = contains_any(&normalized, &["test", "tests", "tdd", "failing"]);
     let privacy_sensitive = classification
         .and_then(|classification| classification.private)
@@ -574,10 +559,11 @@ fn infer_task_hint(prompt: &str, input_tokens: u32) -> TaskHint {
             "python",
             "cli",
             "refactor",
-            "repo",
             "failing",
         ],
-    ) {
+    ) || is_codebase_work_request(prompt)
+        || is_codebase_reference_request(prompt)
+    {
         return TaskHint::Code;
     }
     if input_tokens > 32_000
@@ -592,6 +578,79 @@ fn infer_task_hint(prompt: &str, input_tokens: u32) -> TaskHint {
         return TaskHint::Writing;
     }
     TaskHint::Simple
+}
+
+fn is_codebase_work_request(prompt: &str) -> bool {
+    let has_code_context = contains_any(
+        prompt,
+        &[
+            "repo",
+            "repository",
+            "codebase",
+            "code",
+            "cli",
+            "rust",
+            "typescript",
+            "python",
+            "file",
+            "files",
+            "module",
+            "function",
+            "parser",
+            "pull request",
+            " pr",
+            "test",
+            "tests",
+        ],
+    );
+    let has_code_action = contains_any(
+        prompt,
+        &[
+            "edit",
+            "fix",
+            "failing",
+            "refactor",
+            "implement",
+            "add",
+            "update",
+            "change",
+            "debug",
+            "compile",
+            "test",
+            "tests",
+            "review",
+        ],
+    );
+
+    has_code_context && has_code_action
+}
+
+fn is_codebase_reference_request(prompt: &str) -> bool {
+    let references_codebase = contains_any(
+        prompt,
+        &[
+            "repo",
+            "repository",
+            "codebase",
+            "this project",
+            "project files",
+        ],
+    );
+    let asks_for_understanding = contains_any(
+        prompt,
+        &[
+            "what is",
+            "what's",
+            "about",
+            "summarize",
+            "explain",
+            "overview",
+            "understand",
+            "walk me through",
+        ],
+    );
+
+    references_codebase && asks_for_understanding
 }
 
 fn contains_any(value: &str, needles: &[&str]) -> bool {

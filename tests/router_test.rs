@@ -91,6 +91,33 @@ fn infers_codebase_editing_without_an_explicit_hint() {
 }
 
 #[test]
+fn repo_summary_question_does_not_match_repo_code_rule() {
+    let router = Router::new(RouterConfig::default());
+
+    let decision = router
+        .route(RouteRequest::new("what is this repo about?"))
+        .expect("route should succeed");
+
+    assert_eq!(decision.provider, ProviderId::Codex);
+    assert!(
+        !decision
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("repo-code-to-codex")),
+        "repo summary questions should not be treated as repo edit work: {:?}",
+        decision.reasons
+    );
+    assert!(
+        decision
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("Scored")),
+        "repo summary questions should route through scoring, not the edit rule: {:?}",
+        decision.reasons
+    );
+}
+
+#[test]
 fn llm_classification_can_supply_task_signals() {
     let router = Router::new(RouterConfig::default());
 

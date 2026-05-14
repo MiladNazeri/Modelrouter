@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use modelrouter::{ProviderId, build_provider_command};
+use modelrouter::{ProviderCommand, ProviderId, build_provider_command, run_provider_command};
 
 #[test]
 fn builds_codex_subscription_cli_command() {
@@ -11,7 +11,12 @@ fn builds_codex_subscription_cli_command() {
         Some(Path::new("/tmp/project")),
     );
 
-    assert_eq!(command.program, "codex");
+    assert_eq!(
+        Path::new(&command.program)
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("codex")
+    );
     assert_eq!(
         command.args,
         vec!["exec", "--color", "never", "--cd", "/tmp/project", "-"]
@@ -87,4 +92,23 @@ fn builds_aider_agent_cli_command() {
         command.working_dir.as_deref(),
         Some(Path::new("/tmp/project"))
     );
+}
+
+#[test]
+fn failed_provider_command_includes_stdout_when_stderr_is_empty() {
+    let command = ProviderCommand {
+        program: "/bin/sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            "printf 'codex refused this request'; exit 1".to_string(),
+        ],
+        stdin: String::new(),
+        working_dir: None,
+    };
+
+    let error = run_provider_command(&command).expect_err("command should fail");
+    let message = error.to_string();
+
+    assert!(message.contains("exit status: 1"));
+    assert!(message.contains("stdout: codex refused this request"));
 }

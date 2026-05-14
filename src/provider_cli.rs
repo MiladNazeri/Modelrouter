@@ -1,4 +1,5 @@
 use std::{
+    env,
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -57,11 +58,11 @@ pub enum ProviderCliError {
         program: String,
         source: std::io::Error,
     },
-    #[error("{program} failed with status {status}: {stderr}")]
+    #[error("{program} failed with status {status}: {details}")]
     Failed {
         program: String,
         status: String,
-        stderr: String,
+        details: String,
     },
 }
 
@@ -127,18 +128,29 @@ pub fn run_provider_command(command: &ProviderCommand) -> Result<String, Provide
         })?;
 
     if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(ProviderCliError::Failed {
             program: command.program.clone(),
             status: output.status.to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            details: command_failure_details(&stdout, &stderr),
         });
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-pub fn diagnose_provider_failure(provider: &str, stderr: &str) -> ProviderDiagnostic {
-    let normalized = stderr.to_ascii_lowercase();
+fn command_failure_details(stdout: &str, stderr: &str) -> String {
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => "no stdout or stderr captured".to_string(),
+        (true, false) => format!("stderr: {stderr}"),
+        (false, true) => format!("stdout: {stdout}"),
+        (false, false) => format!("stderr: {stderr}\nstdout: {stdout}"),
+    }
+}
+
+pub fn diagnose_provider_failure(provider: &str, output: &str) -> ProviderDiagnostic {
+    let normalized = output.to_ascii_lowercase();
     let (category, action) = if normalized.contains("not logged in")
         || normalized.contains("login")
         || normalized.contains("unauthorized")
@@ -174,7 +186,7 @@ pub fn diagnose_provider_failure(provider: &str, stderr: &str) -> ProviderDiagno
     ProviderDiagnostic {
         provider: provider.to_string(),
         category,
-        message: stderr.trim().to_string(),
+        message: output.trim().to_string(),
         action,
     }
 }
@@ -238,11 +250,26 @@ fn build_codex_command(model: &str, prompt: &str, cwd: Option<&Path>) -> Provide
     args.push("-".to_string());
 
     ProviderCommand {
-        program: "codex".to_string(),
+        program: codex_program(),
         args,
         stdin: prompt.to_string(),
         working_dir: cwd.map(Path::to_path_buf),
     }
+}
+
+fn codex_program() -> String {
+    if let Ok(program) = env::var("MODELROUTER_CODEX_BIN")
+        && !program.trim().is_empty()
+    {
+        return program;
+    }
+
+    let app_bundle_program = Path::new("/Applications/Codex.app/Contents/Resources/codex");
+    if app_bundle_program.is_file() {
+        return app_bundle_program.display().to_string();
+    }
+
+    "codex".to_string()
 }
 
 fn build_claude_command(model: &str, prompt: &str, cwd: Option<&Path>) -> ProviderCommand {
