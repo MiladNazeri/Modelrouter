@@ -289,13 +289,15 @@ fn build_claude_command(model: &str, prompt: &str, cwd: Option<&Path>) -> Provid
 }
 
 fn build_gemini_command(model: &str, prompt: &str, cwd: Option<&Path>) -> ProviderCommand {
-    let mut args = vec!["--output-format".to_string(), "text".to_string()];
+    let mut args = Vec::new();
     push_model_args(&mut args, "--model", model);
+    args.push("--prompt".to_string());
+    args.push(prompt.to_string());
 
     ProviderCommand {
         program: "gemini".to_string(),
         args,
-        stdin: prompt.to_string(),
+        stdin: String::new(),
         working_dir: cwd.map(Path::to_path_buf),
     }
 }

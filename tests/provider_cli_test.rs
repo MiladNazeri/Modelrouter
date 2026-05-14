@@ -71,9 +71,14 @@ fn builds_gemini_subscription_cli_command() {
     assert_eq!(command.program, "gemini");
     assert_eq!(
         command.args,
-        vec!["--output-format", "text", "--model", "gemini-2.5-pro"]
+        vec![
+            "--model",
+            "gemini-2.5-pro",
+            "--prompt",
+            "Analyze this long context."
+        ]
     );
-    assert_eq!(command.stdin, "Analyze this long context.");
+    assert_eq!(command.stdin, "");
 }
 
 #[test]

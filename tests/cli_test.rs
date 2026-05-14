@@ -3,9 +3,11 @@ use predicates::prelude::*;
 
 #[test]
 fn route_command_prints_json_decision() {
+    let dir = tempfile::tempdir().expect("temp dir");
     let mut command = Command::cargo_bin("modelrouter").expect("binary exists");
 
     command
+        .current_dir(dir.path())
         .args(["route", "--prompt", "Summarize this quick note.", "--json"])
         .assert()
         .success()
