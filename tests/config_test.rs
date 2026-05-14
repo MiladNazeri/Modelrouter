@@ -110,4 +110,5 @@ fn example_config_loads() {
             .expect("openai-compatible")
             .enabled
     );
+    assert_eq!(config.favorites[0].name, "Projects");
 }

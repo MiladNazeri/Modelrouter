@@ -10,9 +10,9 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::{
-    BillingMode, Capability, ProjectProfile, ProviderConfig, ProviderHealth, ProviderId,
-    ProviderKind, RequestLogEntry, RouteDecision, RouteMatch, RouteRequest, RouteRule, Router,
-    RouterConfig, RoutingConfig, ServerConfig, SpendWindow, TaskHint, append_request_log,
+    BillingMode, Capability, PathFavorite, ProjectProfile, ProviderConfig, ProviderHealth,
+    ProviderId, ProviderKind, RequestLogEntry, RouteDecision, RouteMatch, RouteRequest, RouteRule,
+    Router, RouterConfig, RoutingConfig, ServerConfig, SpendWindow, TaskHint, append_request_log,
     apply_project_profile, build_anthropic_cost_request, build_openai_cost_request, health_report,
     load_config, load_metrics, parse_anthropic_cost_report, parse_openai_costs_response,
     run_provider_with_usage, run_tui, serve_mcp, serve_with_log_and_config_path,
@@ -649,6 +649,7 @@ fn detected_config(local_endpoint: Option<&str>, auth_token: Option<&str>) -> Ro
                 local_provider: Some(ProviderId::Local),
             },
         ],
+        favorites: detected_favorites(),
         budget: crate::BudgetConfig {
             monthly_api_budget_cents: Some(5_000.0),
         },
@@ -656,6 +657,19 @@ fn detected_config(local_endpoint: Option<&str>, auth_token: Option<&str>) -> Ro
             auth_token: auth_token.map(str::to_string),
         },
     }
+}
+
+fn detected_favorites() -> Vec<PathFavorite> {
+    let path = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Current project")
+        .to_string();
+    vec![PathFavorite {
+        name,
+        path: path.display().to_string(),
+    }]
 }
 
 fn subscription_provider(

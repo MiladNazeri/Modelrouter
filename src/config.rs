@@ -181,6 +181,8 @@ pub struct RouterConfig {
     #[serde(default)]
     pub profiles: Vec<ProjectProfile>,
     #[serde(default)]
+    pub favorites: Vec<PathFavorite>,
+    #[serde(default)]
     pub budget: BudgetConfig,
     #[serde(default)]
     pub server: ServerConfig,
@@ -225,6 +227,12 @@ pub struct ProjectProfile {
     pub reasoning_provider: Option<ProviderId>,
     #[serde(default)]
     pub local_provider: Option<ProviderId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PathFavorite {
+    pub name: String,
+    pub path: String,
 }
 
 impl RouterConfig {
@@ -419,6 +427,7 @@ impl Default for RouterConfig {
             routing: RoutingConfig::default(),
             rules: Vec::new(),
             profiles: Vec::new(),
+            favorites: Vec::new(),
             budget: BudgetConfig::default(),
             server: ServerConfig::default(),
         }

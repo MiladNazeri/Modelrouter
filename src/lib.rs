@@ -17,9 +17,9 @@ mod tui;
 
 pub use compression::{CompressedPrompt, compress_prompt};
 pub use config::{
-    BillingMode, Capability, ProjectProfile, ProviderConfig, ProviderId, ProviderKind, RouteMatch,
-    RouteRule, RouterConfig, RoutingConfig, ServerConfig, TaskHint, apply_project_profile,
-    load_config,
+    BillingMode, Capability, PathFavorite, ProjectProfile, ProviderConfig, ProviderId,
+    ProviderKind, RouteMatch, RouteRule, RouterConfig, RoutingConfig, ServerConfig, TaskHint,
+    apply_project_profile, load_config,
 };
 pub use feedback::{FeedbackEntry, append_feedback};
 pub use gui::GUI_HTML;
@@ -44,7 +44,9 @@ pub use queue::{ExecutionQueue, QueueJob, QueueStatus};
 pub use router::{RouteDecision, RouteRequest, Router, RouterError};
 pub use server::{
     MAX_REQUEST_BODY_BYTES, ServerResponse, handle_server_request,
-    handle_server_request_with_config_path, handle_server_request_with_config_path_and_runner,
+    handle_server_request_with_config_path, handle_server_request_with_config_path_and_headers,
+    handle_server_request_with_config_path_and_runner,
+    handle_server_request_with_config_path_headers_and_runner,
     handle_server_request_with_directory_picker, handle_server_request_with_headers,
     handle_server_request_with_headers_and_runner,
     handle_server_request_with_headers_runner_and_report, handle_server_request_with_runner,

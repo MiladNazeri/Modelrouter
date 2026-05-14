@@ -95,6 +95,8 @@ fn init_command_writes_safe_local_config() {
     assert!(contents.contains("id = \"claude\""));
     assert!(contents.contains("id = \"gemini\""));
     assert!(contents.contains("endpoint_url = \"http://localhost:11434/v1\""));
+    assert!(contents.contains("[[favorites]]"));
+    assert!(contents.contains(dir.path().to_str().expect("utf8 path")));
     assert!(!contents.contains("sk-"));
 }
 

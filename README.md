@@ -167,6 +167,14 @@ code_provider = "codex"
 default_provider = "claude"
 ```
 
+Favorites keep project folders one click away in the GUI path picker:
+
+```toml
+[[favorites]]
+name = "Projects"
+path = "/path/to/projects"
+```
+
 API-backed providers can be blocked by a monthly budget:
 
 ```toml
@@ -224,7 +232,8 @@ The GUI is the browser control plane for:
 - Routing and running prompts with route explanations.
 - Enabling/disabling providers, editing models/endpoints, and smoke-testing provider health.
 - Editing, validating, saving, and hot-reloading `modelrouter.toml` with a `.bak` backup.
-- Creating project profiles with the local path picker.
+- Editing routing defaults, route rules, API budget, auth token, providers, profiles, and favorites through GUI controls.
+- Creating project profiles with native folder picking, in-page browsing, new-folder creation, and persistent favorites.
 - Reviewing request history, spend metrics, daemon health, and setup commands.
 
 Generate a macOS LaunchAgent plist:
@@ -252,7 +261,14 @@ Endpoints:
 - `POST /config/validate`: validate TOML without saving.
 - `POST /config`: save TOML atomically, write a backup, and reload the daemon config.
 - `POST /config/provider`: update one provider and reload config.
+- `POST /config/settings`: update routing defaults, API budget, and auth token.
+- `POST /config/rule`: add or update one routing rule.
+- `POST /config/rule/remove`: remove one routing rule.
 - `POST /config/profile`: add or update one project profile and reload config.
+- `POST /favorites`: add or update a GUI folder favorite.
+- `POST /favorites/remove`: remove a GUI folder favorite.
+- `POST /fs/create-directory`: create a child folder for project setup.
+- `POST /fs/pick-directory`: open the platform folder picker when available.
 - `POST /v1/chat/completions`: non-streaming OpenAI-compatible proxy endpoint.
 
 Example route request:

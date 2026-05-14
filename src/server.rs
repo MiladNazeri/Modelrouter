@@ -11,10 +11,11 @@ use serde_json::{Value, json};
 use tiny_http::{Header, Response, Server, StatusCode};
 
 use crate::{
-    ExecutionQueue, FeedbackEntry, GUI_HTML, ProjectProfile, ProviderConfig, ProviderHealth,
-    ProviderId, RequestLogEntry, RouteDecision, RouteRequest, Router, RouterConfig, TaskHint,
-    append_feedback, append_request_log, apply_project_profile, availability_filtered_config,
-    health_report, load_metrics, metrics_from_logs, run_provider,
+    ExecutionQueue, FeedbackEntry, GUI_HTML, PathFavorite, ProjectProfile, ProviderConfig,
+    ProviderHealth, ProviderId, RequestLogEntry, RouteDecision, RouteMatch, RouteRequest,
+    RouteRule, Router, RouterConfig, TaskHint, append_feedback, append_request_log,
+    apply_project_profile, availability_filtered_config, health_report, load_metrics,
+    metrics_from_logs, run_provider,
 };
 
 pub const MAX_REQUEST_BODY_BYTES: usize = 1_048_576;
@@ -97,6 +98,57 @@ struct ProfileUpdatePayload {
     reasoning_provider: Option<ProviderId>,
     #[serde(default)]
     local_provider: Option<ProviderId>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SettingsUpdatePayload {
+    #[serde(default)]
+    default_provider: Option<ProviderId>,
+    #[serde(default)]
+    code_provider: Option<ProviderId>,
+    #[serde(default)]
+    reasoning_provider: Option<ProviderId>,
+    #[serde(default)]
+    local_provider: Option<ProviderId>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct RuleUpdatePayload {
+    name: String,
+    prefer: ProviderId,
+    #[serde(default)]
+    task: Option<TaskHint>,
+    #[serde(default)]
+    private: Option<bool>,
+    #[serde(default)]
+    long_context: Option<bool>,
+    #[serde(default)]
+    repo: Option<bool>,
+    #[serde(default)]
+    max_input_tokens: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct RuleRemovePayload {
+    name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CreateDirectoryPayload {
+    parent: PathBuf,
+    name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct FavoritePathPayload {
+    path: PathBuf,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct FavoriteRemovePayload {
+    path: String,
 }
 
 struct ServerRuntime<'a> {
@@ -201,6 +253,27 @@ pub fn handle_server_request_with_config_path(
     )
 }
 
+pub fn handle_server_request_with_config_path_and_headers(
+    config: &mut RouterConfig,
+    method: &str,
+    path: &str,
+    body: &str,
+    config_path: Option<&Path>,
+    headers: &[(&str, &str)],
+) -> ServerResponse {
+    handle_server_request_with_config_path_headers_and_runner(
+        config,
+        method,
+        path,
+        body,
+        config_path,
+        headers,
+        |provider, prompt, cwd| {
+            run_provider(provider, prompt, cwd).map_err(|error| error.to_string())
+        },
+    )
+}
+
 pub fn handle_server_request_with_config_path_and_runner<F>(
     config: &mut RouterConfig,
     method: &str,
@@ -219,6 +292,30 @@ where
         log_path: None,
         config_path,
         headers: &[],
+        directory_picker: &native_directory_picker,
+    };
+    handle_server_request_with_queue_and_report(config, method, path, body, runner, runtime)
+}
+
+pub fn handle_server_request_with_config_path_headers_and_runner<F>(
+    config: &mut RouterConfig,
+    method: &str,
+    path: &str,
+    body: &str,
+    config_path: Option<&Path>,
+    headers: &[(&str, &str)],
+    runner: F,
+) -> ServerResponse
+where
+    F: Fn(&ProviderConfig, &str, Option<&Path>) -> Result<String, String>,
+{
+    let queue = ExecutionQueue::default();
+    let runtime = ServerRuntime {
+        health_report_override: None,
+        queue: &queue,
+        log_path: None,
+        config_path,
+        headers,
         directory_picker: &native_directory_picker,
     };
     handle_server_request_with_queue_and_report(config, method, path, body, runner, runtime)
@@ -345,6 +442,7 @@ where
             "/health" => health_response(report),
             "/history" => history_response(runtime.log_path),
             "/queue" => json_response(200, json!({ "jobs": queue_views(runtime.queue) })),
+            "/favorites" => favorites_response(config),
             "/metrics" => metrics_response(runtime.log_path),
             "/spend" => metrics_response(runtime.log_path),
             "/budget" => json_response(200, json!(config.budget)),
@@ -362,11 +460,17 @@ where
         "/run" => run_response(config, body, runner, report),
         "/queue" => queue_response(config, body, runner, report, runtime.queue),
         "/feedback" => feedback_response(body, runtime.log_path),
+        "/fs/create-directory" => create_directory_response(body),
         "/fs/pick-directory" => pick_directory_response(runtime.directory_picker),
+        "/favorites" => favorite_update_response(config, body, runtime.config_path),
+        "/favorites/remove" => favorite_remove_response(config, body, runtime.config_path),
         "/provider-test" => provider_test_response(body, report),
         "/config/validate" => config_validate_response(body),
         "/config" => config_save_response(config, body, runtime.config_path),
         "/config/provider" => provider_update_response(config, body, runtime.config_path),
+        "/config/settings" => settings_update_response(config, body, runtime.config_path),
+        "/config/rule" => rule_update_response(config, body, runtime.config_path),
+        "/config/rule/remove" => rule_remove_response(config, body, runtime.config_path),
         "/config/profile" => profile_update_response(config, body, runtime.config_path),
         "/v1/chat/completions" => openai_chat_completion_response(config, body, runner, report),
         _ => json_response(404, json!({ "error": "not_found" })),
@@ -572,6 +676,10 @@ fn history_response(log_path: Option<&Path>) -> ServerResponse {
     json_response(200, json!({ "entries": entries }))
 }
 
+fn favorites_response(config: &RouterConfig) -> ServerResponse {
+    json_response(200, json!({ "favorites": config.favorites }))
+}
+
 fn config_response(config: &RouterConfig) -> ServerResponse {
     match toml::to_string_pretty(config) {
         Ok(contents) => json_response(
@@ -688,6 +796,170 @@ fn provider_update_response(
     }
 }
 
+fn settings_update_response(
+    config: &mut RouterConfig,
+    body: &str,
+    config_path: Option<&Path>,
+) -> ServerResponse {
+    let raw = match serde_json::from_str::<Value>(body) {
+        Ok(value) => value,
+        Err(error) => {
+            return json_response(
+                400,
+                json!({ "error": "invalid_json", "message": error.to_string() }),
+            );
+        }
+    };
+    let payload = match serde_json::from_value::<SettingsUpdatePayload>(raw.clone()) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return json_response(
+                400,
+                json!({ "error": "invalid_json", "message": error.to_string() }),
+            );
+        }
+    };
+    let mut next = config.clone();
+    if let Some(provider) = payload.default_provider {
+        next.routing.default_provider = provider;
+    }
+    if let Some(provider) = payload.code_provider {
+        next.routing.code_provider = provider;
+    }
+    if let Some(provider) = payload.reasoning_provider {
+        next.routing.reasoning_provider = provider;
+    }
+    if let Some(provider) = payload.local_provider {
+        next.routing.local_provider = provider;
+    }
+    if let Some(value) = raw.get("monthly_api_budget_cents").cloned() {
+        let Some(budget) = parse_optional_non_negative_f64(value) else {
+            return json_response(
+                422,
+                json!({
+                    "error": "settings_invalid",
+                    "message": "monthly_api_budget_cents must be a non-negative number or null",
+                }),
+            );
+        };
+        next.budget.monthly_api_budget_cents = budget;
+    }
+    if let Some(value) = raw.get("auth_token").cloned() {
+        let Some(auth_token) = parse_optional_string(value) else {
+            return json_response(
+                422,
+                json!({
+                    "error": "settings_invalid",
+                    "message": "auth_token must be a string or null",
+                }),
+            );
+        };
+        next.server.auth_token = auth_token;
+    }
+    if let Err(error) = next.validate() {
+        return json_response(
+            422,
+            json!({ "error": "config_invalid", "message": error.to_string() }),
+        );
+    }
+    match persist_config(config, next, config_path) {
+        Ok(save) => json_response(200, save),
+        Err(response) => response,
+    }
+}
+
+fn rule_update_response(
+    config: &mut RouterConfig,
+    body: &str,
+    config_path: Option<&Path>,
+) -> ServerResponse {
+    let payload = match serde_json::from_str::<RuleUpdatePayload>(body) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return json_response(
+                400,
+                json!({ "error": "invalid_json", "message": error.to_string() }),
+            );
+        }
+    };
+    let name = payload.name.trim().to_string();
+    if name.is_empty() {
+        return json_response(
+            422,
+            json!({ "error": "rule_invalid", "message": "name is required" }),
+        );
+    }
+    let rule = RouteRule {
+        name,
+        prefer: payload.prefer,
+        when: RouteMatch {
+            task: payload.task,
+            private: payload.private,
+            long_context: payload.long_context,
+            repo: payload.repo,
+            max_input_tokens: payload.max_input_tokens,
+        },
+    };
+    let mut next = config.clone();
+    if let Some(existing) = next
+        .rules
+        .iter_mut()
+        .find(|existing| existing.name == rule.name)
+    {
+        *existing = rule;
+    } else {
+        next.rules.push(rule);
+    }
+    next.rules.sort_by(|left, right| {
+        left.name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+    });
+    if let Err(error) = next.validate() {
+        return json_response(
+            422,
+            json!({ "error": "config_invalid", "message": error.to_string() }),
+        );
+    }
+    match persist_config(config, next, config_path) {
+        Ok(save) => json_response(200, save),
+        Err(response) => response,
+    }
+}
+
+fn rule_remove_response(
+    config: &mut RouterConfig,
+    body: &str,
+    config_path: Option<&Path>,
+) -> ServerResponse {
+    let payload = match serde_json::from_str::<RuleRemovePayload>(body) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return json_response(
+                400,
+                json!({ "error": "invalid_json", "message": error.to_string() }),
+            );
+        }
+    };
+    let name = payload.name.trim();
+    if name.is_empty() {
+        return json_response(
+            422,
+            json!({ "error": "rule_invalid", "message": "name is required" }),
+        );
+    }
+    let mut next = config.clone();
+    let before = next.rules.len();
+    next.rules.retain(|rule| rule.name != name);
+    if next.rules.len() == before {
+        return json_response(404, json!({ "error": "rule_not_found" }));
+    }
+    match persist_config(config, next, config_path) {
+        Ok(save) => json_response(200, save),
+        Err(response) => response,
+    }
+}
+
 fn profile_update_response(
     config: &mut RouterConfig,
     body: &str,
@@ -736,6 +1008,139 @@ fn profile_update_response(
         Ok(save) => json_response(200, save),
         Err(response) => response,
     }
+}
+
+fn favorite_update_response(
+    config: &mut RouterConfig,
+    body: &str,
+    config_path: Option<&Path>,
+) -> ServerResponse {
+    let payload = match serde_json::from_str::<FavoritePathPayload>(body) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return json_response(
+                400,
+                json!({ "error": "invalid_json", "message": error.to_string() }),
+            );
+        }
+    };
+    let path = match canonical_directory(&payload.path) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    let path = path.display().to_string();
+    let name = payload
+        .name
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| favorite_name_for_path(Path::new(&path)));
+    let favorite = PathFavorite {
+        name,
+        path: path.clone(),
+    };
+    let mut next = config.clone();
+    if let Some(existing) = next
+        .favorites
+        .iter_mut()
+        .find(|existing| existing.path == favorite.path)
+    {
+        *existing = favorite;
+    } else {
+        next.favorites.push(favorite);
+    }
+    next.favorites.sort_by(|left, right| {
+        left.name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+    });
+    match persist_config(config, next, config_path) {
+        Ok(save) => json_response(200, save),
+        Err(response) => response,
+    }
+}
+
+fn favorite_remove_response(
+    config: &mut RouterConfig,
+    body: &str,
+    config_path: Option<&Path>,
+) -> ServerResponse {
+    let payload = match serde_json::from_str::<FavoriteRemovePayload>(body) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return json_response(
+                400,
+                json!({ "error": "invalid_json", "message": error.to_string() }),
+            );
+        }
+    };
+    let requested = payload.path.trim();
+    if requested.is_empty() {
+        return json_response(
+            422,
+            json!({ "error": "favorite_invalid", "message": "path is required" }),
+        );
+    }
+    let expanded = expand_home_path(Path::new(requested));
+    let canonical = fs::canonicalize(&expanded)
+        .ok()
+        .map(|path| path.display().to_string());
+    let mut next = config.clone();
+    let before = next.favorites.len();
+    next.favorites.retain(|favorite| {
+        favorite.path != requested && Some(&favorite.path) != canonical.as_ref()
+    });
+    if next.favorites.len() == before {
+        return json_response(404, json!({ "error": "favorite_not_found" }));
+    }
+    match persist_config(config, next, config_path) {
+        Ok(save) => json_response(200, save),
+        Err(response) => response,
+    }
+}
+
+fn create_directory_response(body: &str) -> ServerResponse {
+    let payload = match serde_json::from_str::<CreateDirectoryPayload>(body) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return json_response(
+                400,
+                json!({ "error": "invalid_json", "message": error.to_string() }),
+            );
+        }
+    };
+    let parent = match canonical_directory(&payload.parent) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    let name = payload.name.trim();
+    if !valid_new_directory_name(name) {
+        return json_response(
+            422,
+            json!({ "error": "invalid_directory_name", "message": "Use a single folder name without path separators." }),
+        );
+    }
+    let path = parent.join(name);
+    if path.exists() {
+        return json_response(
+            409,
+            json!({ "error": "path_exists", "path": path.display().to_string() }),
+        );
+    }
+    if let Err(error) = fs::create_dir(&path) {
+        return json_response(
+            500,
+            json!({ "error": "directory_create_failed", "message": error.to_string() }),
+        );
+    }
+    json_response(
+        201,
+        json!({
+            "created": true,
+            "name": name,
+            "parent": parent.display().to_string(),
+            "path": path.display().to_string(),
+        }),
+    )
 }
 
 fn fs_response(query: Option<&str>) -> ServerResponse {
@@ -1046,6 +1451,40 @@ fn parse_config_toml(contents: &str) -> Result<RouterConfig, ServerResponse> {
     Ok(config)
 }
 
+fn parse_optional_non_negative_f64(value: Value) -> Option<Option<f64>> {
+    match value {
+        Value::Null => Some(None),
+        Value::Number(number) => number.as_f64().filter(|value| *value >= 0.0).map(Some),
+        Value::String(text) => {
+            let text = text.trim();
+            if text.is_empty() {
+                Some(None)
+            } else {
+                text.parse::<f64>()
+                    .ok()
+                    .filter(|value| *value >= 0.0)
+                    .map(Some)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn parse_optional_string(value: Value) -> Option<Option<String>> {
+    match value {
+        Value::Null => Some(None),
+        Value::String(text) => {
+            let text = text.trim();
+            if text.is_empty() {
+                Some(None)
+            } else {
+                Some(Some(text.to_string()))
+            }
+        }
+        _ => None,
+    }
+}
+
 fn persist_config(
     config: &mut RouterConfig,
     next: RouterConfig,
@@ -1274,6 +1713,43 @@ fn expand_home_path(path: &Path) -> PathBuf {
         );
     }
     path.to_path_buf()
+}
+
+fn canonical_directory(path: &Path) -> Result<PathBuf, ServerResponse> {
+    let requested = expand_home_path(path);
+    let path = match fs::canonicalize(&requested) {
+        Ok(path) => path,
+        Err(error) => {
+            return Err(json_response(
+                404,
+                json!({ "error": "path_not_found", "message": error.to_string() }),
+            ));
+        }
+    };
+    if !path.is_dir() {
+        return Err(json_response(
+            422,
+            json!({ "error": "not_a_directory", "path": path.display().to_string() }),
+        ));
+    }
+    Ok(path)
+}
+
+fn favorite_name_for_path(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("Favorite")
+        .to_string()
+}
+
+fn valid_new_directory_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !Path::new(name).is_absolute()
 }
 
 fn native_directory_picker() -> Result<Option<PathBuf>, String> {

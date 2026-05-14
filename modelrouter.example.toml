@@ -124,3 +124,7 @@ name = "modelrouter"
 path_contains = "Modelrouter"
 code_provider = "codex"
 default_provider = "claude"
+
+[[favorites]]
+name = "Projects"
+path = "/path/to/projects"

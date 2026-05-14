@@ -50,6 +50,7 @@ pub const GUI_HTML: &str = r#"<!doctype html>
       border-radius: 8px;
       padding: 14px;
     }
+    .stacked-panel { margin-top: 14px; }
     label { display: block; color: var(--muted); margin-bottom: 6px; }
     textarea, select, input {
       width: 100%;
@@ -115,6 +116,13 @@ pub const GUI_HTML: &str = r#"<!doctype html>
     .path-picker-control { display: flex; gap: 8px; }
     .path-picker-control input { min-width: 0; }
     .path-picker-control button { flex: 0 0 auto; }
+    .select-row { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+    .select-row select { min-width: 0; }
+    .select-row button { flex: 0 0 auto; }
+    .header-token {
+      width: min(260px, 34vw);
+      padding: 8px 10px;
+    }
     .picker {
       margin: 12px 0;
       border: 1px solid var(--line);
@@ -137,6 +145,18 @@ pub const GUI_HTML: &str = r#"<!doctype html>
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    .picker-create {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 8px;
+      padding: 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    .picker-status {
+      padding: 0 8px 8px;
+      min-height: 18px;
+      color: var(--muted);
     }
     .path-entries { max-height: 260px; overflow: auto; padding: 6px; }
     .path-entry {
@@ -165,6 +185,7 @@ pub const GUI_HTML: &str = r#"<!doctype html>
     <header>
       <h1>Model Router</h1>
       <div class="actions">
+        <input id="apiToken" class="header-token" type="password" autocomplete="off" placeholder="Daemon auth token">
         <button id="refreshAll" type="button">Refresh</button>
         <a href="/health"><button type="button">Health JSON</button></a>
       </div>
@@ -203,6 +224,12 @@ pub const GUI_HTML: &str = r#"<!doctype html>
               <div class="path-picker-control">
                 <input id="cwd" placeholder="/path/to/project">
                 <button id="browsePath" type="button">Choose folder</button>
+                <button id="browsePathTree" type="button">Browse</button>
+                <button id="favoriteCwd" type="button">Favorite</button>
+              </div>
+              <div class="select-row">
+                <select id="cwdFavorite" aria-label="Favorite working directories"></select>
+                <button id="useCwdFavorite" type="button">Use favorite</button>
               </div>
             </div>
           </div>
@@ -213,6 +240,12 @@ pub const GUI_HTML: &str = r#"<!doctype html>
               <button id="usePath" type="button">Use</button>
               <button id="closePath" type="button">Close</button>
             </div>
+            <div class="picker-create">
+              <input id="newFolderName" placeholder="New folder name">
+              <button id="createFolder" type="button">New folder</button>
+              <button id="favoriteSelectedPath" type="button">Favorite</button>
+            </div>
+            <div id="pickerStatus" class="picker-status"></div>
             <div id="pathEntries" class="path-entries"></div>
           </div>
           <div class="actions">
@@ -247,7 +280,7 @@ pub const GUI_HTML: &str = r#"<!doctype html>
     <section id="configView" class="view">
       <div class="grid">
         <section class="panel">
-          <h2>Config</h2>
+          <h2>Direct TOML editor</h2>
           <textarea id="configText" class="config-editor" spellcheck="false"></textarea>
           <div class="actions">
             <button id="loadConfig" type="button">Load</button>
@@ -256,8 +289,80 @@ pub const GUI_HTML: &str = r#"<!doctype html>
           </div>
         </section>
         <aside class="panel">
+          <h2>Routing defaults</h2>
+          <div class="compact-row">
+            <div><label for="settingDefault">Default</label><select id="settingDefault"></select></div>
+            <div><label for="settingCode">Code</label><select id="settingCode"></select></div>
+            <div><label for="settingReasoning">Reasoning</label><select id="settingReasoning"></select></div>
+            <div><label for="settingLocal">Local</label><select id="settingLocal"></select></div>
+          </div>
+          <label for="budgetCents">API budget</label>
+          <input id="budgetCents" type="number" min="0" step="0.01" placeholder="Monthly cents, blank for none">
+          <label for="authToken">Auth token</label>
+          <input id="authToken" type="password" autocomplete="off" placeholder="Blank disables daemon auth">
+          <div class="actions">
+            <button class="primary" id="saveSettings" type="button">Save settings</button>
+          </div>
           <h2>Status</h2>
           <pre id="configStatus">No config loaded.</pre>
+        </aside>
+      </div>
+      <div class="two stacked-panel">
+        <section class="panel">
+          <h2>Routing Rules</h2>
+          <table>
+            <thead><tr><th>Name</th><th>When</th><th>Prefer</th><th>Actions</th></tr></thead>
+            <tbody id="rules"></tbody>
+          </table>
+        </section>
+        <aside class="panel">
+          <h2>Add or update rule</h2>
+          <label for="ruleName">Name</label>
+          <input id="ruleName" placeholder="private-work-stays-local">
+          <div class="compact-row">
+            <div><label for="rulePrefer">Prefer</label><select id="rulePrefer"></select></div>
+            <div>
+              <label for="ruleTask">Task</label>
+              <select id="ruleTask">
+                <option value="">any</option>
+                <option value="simple">simple</option>
+                <option value="code">code</option>
+                <option value="deep_reasoning">deep reasoning</option>
+                <option value="writing">writing</option>
+              </select>
+            </div>
+            <div>
+              <label for="rulePrivate">Private</label>
+              <select id="rulePrivate">
+                <option value="">any</option>
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            </div>
+            <div>
+              <label for="ruleLongContext">Long context</label>
+              <select id="ruleLongContext">
+                <option value="">any</option>
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            </div>
+          </div>
+          <div class="compact-row">
+            <div>
+              <label for="ruleRepo">Repo</label>
+              <select id="ruleRepo">
+                <option value="">any</option>
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            </div>
+            <div><label for="ruleMaxInputTokens">Max input tokens</label><input id="ruleMaxInputTokens" type="number" min="0" step="1" placeholder="any"></div>
+          </div>
+          <div class="actions">
+            <button class="primary" id="saveRule" type="button">Save rule</button>
+            <button id="resetRule" type="button">Clear form</button>
+          </div>
         </aside>
       </div>
     </section>
@@ -279,6 +384,12 @@ pub const GUI_HTML: &str = r#"<!doctype html>
           <div class="path-picker-control">
             <input id="profilePath" placeholder="MiladApp">
             <button id="browseProfilePath" type="button">Choose folder</button>
+            <button id="browseProfilePathTree" type="button">Browse</button>
+            <button id="favoriteProfilePath" type="button">Favorite</button>
+          </div>
+          <div class="select-row">
+            <select id="profileFavorite" aria-label="Favorite profile paths"></select>
+            <button id="useProfileFavorite" type="button">Use favorite</button>
           </div>
           <div class="compact-row">
             <div><label for="profileDefault">Default</label><select id="profileDefault"></select></div>
@@ -289,6 +400,13 @@ pub const GUI_HTML: &str = r#"<!doctype html>
           <button class="primary" id="saveProfile" type="button">Save profile</button>
           <pre id="profileStatus"></pre>
         </aside>
+      </div>
+      <div class="panel stacked-panel">
+        <h2>Favorites</h2>
+        <table>
+          <thead><tr><th>Name</th><th>Path</th><th>Actions</th></tr></thead>
+          <tbody id="favorites"></tbody>
+        </table>
       </div>
     </section>
 
@@ -325,13 +443,17 @@ pub const GUI_HTML: &str = r#"<!doctype html>
   </main>
 
   <script>
-    const state = { config: null, health: [], metrics: null, selectedPath: '' };
+    const savedAuthToken = (() => {
+      try { return localStorage.getItem('modelrouter.authToken') || ''; } catch (_error) { return ''; }
+    })();
+    const state = { config: null, health: [], metrics: null, selectedPath: '', pathOnUse: null, authToken: savedAuthToken };
     const providerIds = ['local', 'claude', 'codex', 'gemini', 'lmstudio', 'llamacpp', 'openai_compatible', 'aider'];
     const output = document.getElementById('output');
     const cwdInput = document.getElementById('cwd');
     const pathPicker = document.getElementById('pathPicker');
     const currentPath = document.getElementById('currentPath');
     const pathEntries = document.getElementById('pathEntries');
+    const pickerStatus = document.getElementById('pickerStatus');
 
     function option(value, label, selected) {
       const item = document.createElement('option');
@@ -347,12 +469,46 @@ pub const GUI_HTML: &str = r#"<!doctype html>
       for (const id of providerIds) select.append(option(id, id, false));
     }
 
+    function favorites() {
+      return state.config && Array.isArray(state.config.favorites) ? state.config.favorites : [];
+    }
+
+    function fillFavoriteSelect(select) {
+      select.replaceChildren();
+      select.append(option('', 'Favorites', true));
+      for (const favorite of favorites()) {
+        select.append(option(favorite.path, `${favorite.name} - ${favorite.path}`, false));
+      }
+    }
+
+    function refreshFavoriteSelects() {
+      fillFavoriteSelect(document.getElementById('cwdFavorite'));
+      fillFavoriteSelect(document.getElementById('profileFavorite'));
+    }
+
+    function configText() {
+      return document.getElementById('configText');
+    }
+
+    function applySavedConfig(json) {
+      if (json.config) state.config = json.config;
+      if (json.toml) configText().value = json.toml;
+      renderProviders();
+      renderProfiles();
+      renderFavorites();
+      renderSettings();
+      renderRules();
+      refreshFavoriteSelects();
+    }
+
     function setJson(target, value) {
       target.textContent = JSON.stringify(value, null, 2);
     }
 
     async function api(path, options = {}) {
-      const res = await fetch(path, options);
+      const headers = new Headers(options.headers || {});
+      if (state.authToken) headers.set('Authorization', `Bearer ${state.authToken}`);
+      const res = await fetch(path, { ...options, headers });
       const text = await res.text();
       const json = text ? JSON.parse(text) : {};
       if (!res.ok) throw json;
@@ -404,7 +560,9 @@ pub const GUI_HTML: &str = r#"<!doctype html>
     }
 
     async function loadPath(path, onUse) {
+      state.pathOnUse = onUse;
       pathPicker.hidden = false;
+      pickerStatus.textContent = '';
       pathEntries.replaceChildren(document.createTextNode('Loading...'));
       try {
         const url = path ? `/fs?path=${encodeURIComponent(path)}` : '/fs';
@@ -433,8 +591,32 @@ pub const GUI_HTML: &str = r#"<!doctype html>
           onUse(state.selectedPath);
           pathPicker.hidden = true;
         };
+        document.getElementById('createFolder').onclick = createFolderFromPicker;
+        document.getElementById('favoriteSelectedPath').onclick = () => favoritePath(state.selectedPath);
       } catch (error) {
         pathEntries.replaceChildren(document.createTextNode(error.message || error.error || 'Unable to read path.'));
+      }
+    }
+
+    async function createFolderFromPicker() {
+      const nameInput = document.getElementById('newFolderName');
+      const name = nameInput.value.trim();
+      if (!state.selectedPath || !name) {
+        pickerStatus.textContent = 'Choose a parent folder and enter a folder name.';
+        return;
+      }
+      try {
+        const json = await api('/fs/create-directory', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parent: state.selectedPath, name })
+        });
+        nameInput.value = '';
+        pickerStatus.textContent = `Created ${json.path}`;
+        if (state.pathOnUse) state.pathOnUse(json.path);
+        await loadPath(json.path, state.pathOnUse || (() => {}));
+      } catch (error) {
+        pickerStatus.textContent = error.message || error.error || 'Unable to create folder.';
       }
     }
 
@@ -454,12 +636,45 @@ pub const GUI_HTML: &str = r#"<!doctype html>
       }
     }
 
+    async function favoritePath(path) {
+      const trimmed = (path || '').trim();
+      if (!trimmed) return;
+      try {
+        const json = await api('/favorites', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: trimmed })
+        });
+        applySavedConfig(json);
+        pickerStatus.textContent = `Favorited ${trimmed}`;
+      } catch (error) {
+        const message = error.message || error.error || 'Unable to save favorite.';
+        pickerStatus.textContent = message;
+        document.getElementById('profileStatus').textContent = message;
+      }
+    }
+
+    async function removeFavorite(path) {
+      try {
+        const json = await api('/favorites/remove', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path })
+        });
+        applySavedConfig(json);
+      } catch (error) {
+        document.getElementById('profileStatus').textContent = error.message || error.error || 'Unable to remove favorite.';
+      }
+    }
+
+    function useSelectedFavorite(selectId, inputId) {
+      const path = document.getElementById(selectId).value;
+      if (path) document.getElementById(inputId).value = path;
+    }
+
     async function loadConfig() {
       const json = await api('/config');
-      state.config = json.config;
-      document.getElementById('configText').value = json.toml || '';
-      renderProviders();
-      renderProfiles();
+      applySavedConfig(json);
       document.getElementById('configStatus').textContent = 'Loaded current daemon config.';
     }
 
@@ -483,8 +698,183 @@ pub const GUI_HTML: &str = r#"<!doctype html>
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ toml: document.getElementById('configText').value })
         });
-        state.config = json.config;
-        document.getElementById('configText').value = json.toml || document.getElementById('configText').value;
+        applySavedConfig(json);
+        setJson(document.getElementById('configStatus'), json);
+        await refreshAll();
+      } catch (error) {
+        setJson(document.getElementById('configStatus'), error);
+      }
+    }
+
+    function setSelectValue(id, value) {
+      const select = document.getElementById(id);
+      select.value = value || '';
+    }
+
+    function renderSettings() {
+      if (!state.config) return;
+      const routing = state.config.routing || {};
+      setSelectValue('settingDefault', routing.default_provider);
+      setSelectValue('settingCode', routing.code_provider);
+      setSelectValue('settingReasoning', routing.reasoning_provider);
+      setSelectValue('settingLocal', routing.local_provider);
+      const budget = state.config.budget || {};
+      document.getElementById('budgetCents').value = budget.monthly_api_budget_cents ?? '';
+      const server = state.config.server || {};
+      document.getElementById('authToken').value = server.auth_token || '';
+    }
+
+    async function saveSettings() {
+      const budgetText = document.getElementById('budgetCents').value.trim();
+      const authText = document.getElementById('authToken').value.trim();
+      const payload = {
+        default_provider: document.getElementById('settingDefault').value,
+        code_provider: document.getElementById('settingCode').value,
+        reasoning_provider: document.getElementById('settingReasoning').value,
+        local_provider: document.getElementById('settingLocal').value,
+        monthly_api_budget_cents: budgetText ? Number(budgetText) : null,
+        auth_token: authText || null
+      };
+      if (budgetText && Number.isNaN(payload.monthly_api_budget_cents)) {
+        document.getElementById('configStatus').textContent = 'API budget must be a number.';
+        return;
+      }
+      try {
+        const json = await api('/config/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        applySavedConfig(json);
+        setJson(document.getElementById('configStatus'), json);
+        await refreshAll();
+      } catch (error) {
+        setJson(document.getElementById('configStatus'), error);
+      }
+    }
+
+    function nullableBoolean(id) {
+      const value = document.getElementById(id).value;
+      if (value === '') return null;
+      return value === 'true';
+    }
+
+    function setNullableBoolean(id, value) {
+      const select = document.getElementById(id);
+      if (value === true) select.value = 'true';
+      else if (value === false) select.value = 'false';
+      else select.value = '';
+    }
+
+    function ruleMatchLabel(rule) {
+      const when = rule.when || {};
+      const parts = [];
+      if (when.task) parts.push(`task=${when.task}`);
+      if (when.private !== undefined && when.private !== null) parts.push(`private=${when.private}`);
+      if (when.long_context !== undefined && when.long_context !== null) parts.push(`long_context=${when.long_context}`);
+      if (when.repo !== undefined && when.repo !== null) parts.push(`repo=${when.repo}`);
+      if (when.max_input_tokens !== undefined && when.max_input_tokens !== null) parts.push(`max_input_tokens=${when.max_input_tokens}`);
+      return parts.length ? parts.join(', ') : 'always';
+    }
+
+    function renderRules() {
+      if (!state.config) return;
+      const rules = state.config.rules || [];
+      const rows = rules.map(rule => {
+        const row = document.createElement('tr');
+        const name = document.createElement('td');
+        name.textContent = rule.name;
+        const when = document.createElement('td');
+        when.textContent = ruleMatchLabel(rule);
+        const prefer = document.createElement('td');
+        prefer.textContent = rule.prefer;
+        const actions = document.createElement('td');
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.textContent = 'Edit';
+        edit.onclick = () => editRule(rule);
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = 'Remove';
+        remove.onclick = () => removeRule(rule.name);
+        actions.append(edit, remove);
+        row.append(name, when, prefer, actions);
+        return row;
+      });
+      document.getElementById('rules').replaceChildren(...(rows.length ? rows : [emptyRulesRow()]));
+    }
+
+    function emptyRulesRow() {
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 4;
+      cell.textContent = 'No routing rules yet.';
+      row.append(cell);
+      return row;
+    }
+
+    function editRule(rule) {
+      const when = rule.when || {};
+      document.getElementById('ruleName').value = rule.name || '';
+      setSelectValue('rulePrefer', rule.prefer || 'local');
+      setSelectValue('ruleTask', when.task || '');
+      setNullableBoolean('rulePrivate', when.private);
+      setNullableBoolean('ruleLongContext', when.long_context);
+      setNullableBoolean('ruleRepo', when.repo);
+      document.getElementById('ruleMaxInputTokens').value = when.max_input_tokens ?? '';
+    }
+
+    function resetRuleForm() {
+      document.getElementById('ruleName').value = '';
+      setSelectValue('rulePrefer', 'local');
+      setSelectValue('ruleTask', '');
+      setNullableBoolean('rulePrivate', null);
+      setNullableBoolean('ruleLongContext', null);
+      setNullableBoolean('ruleRepo', null);
+      document.getElementById('ruleMaxInputTokens').value = '';
+    }
+
+    async function saveRule() {
+      const maxTokens = document.getElementById('ruleMaxInputTokens').value.trim();
+      const payload = {
+        name: document.getElementById('ruleName').value.trim(),
+        prefer: document.getElementById('rulePrefer').value,
+        task: document.getElementById('ruleTask').value || null,
+        private: nullableBoolean('rulePrivate'),
+        long_context: nullableBoolean('ruleLongContext'),
+        repo: nullableBoolean('ruleRepo'),
+        max_input_tokens: maxTokens ? Number(maxTokens) : null
+      };
+      if (!payload.name) {
+        document.getElementById('configStatus').textContent = 'Rule name is required.';
+        return;
+      }
+      if (maxTokens && (!Number.isInteger(payload.max_input_tokens) || payload.max_input_tokens < 0)) {
+        document.getElementById('configStatus').textContent = 'Max input tokens must be a non-negative integer.';
+        return;
+      }
+      try {
+        const json = await api('/config/rule', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        applySavedConfig(json);
+        setJson(document.getElementById('configStatus'), json);
+        await refreshAll();
+      } catch (error) {
+        setJson(document.getElementById('configStatus'), error);
+      }
+    }
+
+    async function removeRule(name) {
+      try {
+        const json = await api('/config/rule/remove', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name })
+        });
+        applySavedConfig(json);
         setJson(document.getElementById('configStatus'), json);
         await refreshAll();
       } catch (error) {
@@ -585,8 +975,7 @@ pub const GUI_HTML: &str = r#"<!doctype html>
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ provider, enabled, model, endpoint_url: endpointUrl })
         });
-        state.config = json.config;
-        document.getElementById('configText').value = json.toml || document.getElementById('configText').value;
+        applySavedConfig(json);
         await refreshAll();
       } catch (error) {
         alert(error.message || error.error || 'Provider save failed.');
@@ -630,6 +1019,42 @@ pub const GUI_HTML: &str = r#"<!doctype html>
       document.getElementById('profiles').replaceChildren(...rows);
     }
 
+    function renderFavorites() {
+      const rows = favorites().map(favorite => {
+        const row = document.createElement('tr');
+        const name = document.createElement('td');
+        name.textContent = favorite.name;
+        const path = document.createElement('td');
+        path.textContent = favorite.path;
+        const actions = document.createElement('td');
+        const useRoute = document.createElement('button');
+        useRoute.type = 'button';
+        useRoute.textContent = 'Route';
+        useRoute.onclick = () => { cwdInput.value = favorite.path; };
+        const useProfile = document.createElement('button');
+        useProfile.type = 'button';
+        useProfile.textContent = 'Profile';
+        useProfile.onclick = () => { document.getElementById('profilePath').value = favorite.path; };
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = 'Remove';
+        remove.onclick = () => removeFavorite(favorite.path);
+        actions.append(useRoute, useProfile, remove);
+        row.append(name, path, actions);
+        return row;
+      });
+      document.getElementById('favorites').replaceChildren(...(rows.length ? rows : [emptyFavoritesRow()]));
+    }
+
+    function emptyFavoritesRow() {
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 3;
+      cell.textContent = 'No favorites yet.';
+      row.append(cell);
+      return row;
+    }
+
     async function saveProfile() {
       const payload = {
         name: document.getElementById('profileName').value.trim(),
@@ -645,8 +1070,7 @@ pub const GUI_HTML: &str = r#"<!doctype html>
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
-        state.config = json.config;
-        document.getElementById('configText').value = json.toml || document.getElementById('configText').value;
+        applySavedConfig(json);
         setJson(document.getElementById('profileStatus'), json);
         await refreshAll();
       } catch (error) {
@@ -663,11 +1087,26 @@ pub const GUI_HTML: &str = r#"<!doctype html>
 
     for (const select of [
       document.getElementById('prefer'),
+      document.getElementById('settingDefault'),
+      document.getElementById('settingCode'),
+      document.getElementById('settingReasoning'),
+      document.getElementById('settingLocal'),
+      document.getElementById('rulePrefer'),
       document.getElementById('profileDefault'),
       document.getElementById('profileCode'),
       document.getElementById('profileReasoning'),
       document.getElementById('profileLocal')
     ]) fillProviderSelect(select, select.id === 'prefer');
+    refreshFavoriteSelects();
+    resetRuleForm();
+    document.getElementById('apiToken').value = state.authToken;
+    document.getElementById('apiToken').oninput = event => {
+      state.authToken = event.target.value.trim();
+      try {
+        if (state.authToken) localStorage.setItem('modelrouter.authToken', state.authToken);
+        else localStorage.removeItem('modelrouter.authToken');
+      } catch (_error) {}
+    };
 
     document.querySelectorAll('.tab').forEach(tab => {
       tab.onclick = () => {
@@ -680,11 +1119,20 @@ pub const GUI_HTML: &str = r#"<!doctype html>
     document.getElementById('queueBtn').onclick = () => post('/queue');
     document.getElementById('browsePath').onclick = () => chooseDirectory(cwdInput.value.trim(), value => { cwdInput.value = value; });
     document.getElementById('browseProfilePath').onclick = () => chooseDirectory('', value => { document.getElementById('profilePath').value = value; });
+    document.getElementById('browsePathTree').onclick = () => loadPath(cwdInput.value.trim(), value => { cwdInput.value = value; });
+    document.getElementById('browseProfilePathTree').onclick = () => loadPath('', value => { document.getElementById('profilePath').value = value; });
+    document.getElementById('favoriteCwd').onclick = () => favoritePath(cwdInput.value);
+    document.getElementById('favoriteProfilePath').onclick = () => favoritePath(document.getElementById('profilePath').value);
+    document.getElementById('useCwdFavorite').onclick = () => useSelectedFavorite('cwdFavorite', 'cwd');
+    document.getElementById('useProfileFavorite').onclick = () => useSelectedFavorite('profileFavorite', 'profilePath');
     document.getElementById('closePath').onclick = () => { pathPicker.hidden = true; };
     document.getElementById('refreshAll').onclick = refreshAll;
     document.getElementById('loadConfig').onclick = loadConfig;
     document.getElementById('validateConfig').onclick = validateConfig;
     document.getElementById('saveConfig').onclick = saveConfig;
+    document.getElementById('saveSettings').onclick = saveSettings;
+    document.getElementById('saveRule').onclick = saveRule;
+    document.getElementById('resetRule').onclick = resetRuleForm;
     document.getElementById('saveProfile').onclick = saveProfile;
     refreshAll().catch(error => { output.textContent = JSON.stringify(error, null, 2); });
   </script>

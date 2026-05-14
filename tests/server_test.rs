@@ -2,6 +2,7 @@ use std::path::Path;
 
 use modelrouter::{
     ProviderConfig, RouterConfig, handle_server_request, handle_server_request_with_config_path,
+    handle_server_request_with_config_path_and_headers,
     handle_server_request_with_directory_picker,
     handle_server_request_with_headers_runner_and_report,
     handle_server_request_with_runner_and_report, health_report_with,
@@ -156,7 +157,61 @@ fn gui_endpoint_returns_html() {
         response.body["html"]
             .as_str()
             .expect("html")
+            .contains("New folder")
+    );
+    assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
+            .contains("Favorites")
+    );
+    assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
+            .contains("Routing defaults")
+    );
+    assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
+            .contains("Routing Rules")
+    );
+    assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
+            .contains("API budget")
+    );
+    assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
+            .contains("Auth token")
+    );
+    assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
+            .contains("Daemon auth token")
+    );
+    assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
             .contains("/fs/pick-directory")
+    );
+    assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
+            .contains("/config/settings")
+    );
+    assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
+            .contains("/config/rule")
     );
     assert!(
         !response.body["html"]
@@ -272,6 +327,39 @@ fn fs_endpoint_lists_directory_entries_for_picker() {
 }
 
 #[test]
+fn fs_create_directory_endpoint_creates_new_project_folder() {
+    let config = RouterConfig::default();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let body = serde_json::json!({
+        "parent": dir.path().display().to_string(),
+        "name": "new-project"
+    })
+    .to_string();
+
+    let response = handle_server_request(&config, "POST", "/fs/create-directory", &body);
+
+    assert_eq!(response.status, 201);
+    assert_eq!(response.body["created"], true);
+    assert!(dir.path().join("new-project").is_dir());
+}
+
+#[test]
+fn fs_create_directory_endpoint_rejects_path_traversal_names() {
+    let config = RouterConfig::default();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let body = serde_json::json!({
+        "parent": dir.path().display().to_string(),
+        "name": "../elsewhere"
+    })
+    .to_string();
+
+    let response = handle_server_request(&config, "POST", "/fs/create-directory", &body);
+
+    assert_eq!(response.status, 422);
+    assert_eq!(response.body["error"], "invalid_directory_name");
+}
+
+#[test]
 fn fs_pick_directory_endpoint_returns_native_selection() {
     let config = RouterConfig::default();
     let dir = tempfile::tempdir().expect("temp dir");
@@ -330,12 +418,93 @@ fn fs_pick_directory_endpoint_requires_auth_when_server_token_is_configured() {
 }
 
 #[test]
+fn favorites_endpoint_adds_and_persists_bookmark() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("modelrouter.toml");
+    let favorite_dir = dir.path().join("favorite-project");
+    std::fs::create_dir(&favorite_dir).expect("favorite dir");
+    let mut config = RouterConfig::default();
+    std::fs::write(&config_path, toml::to_string_pretty(&config).expect("toml"))
+        .expect("write config");
+    let body = serde_json::json!({
+        "path": favorite_dir.display().to_string(),
+        "name": "Favorite Project"
+    })
+    .to_string();
+    let canonical = std::fs::canonicalize(&favorite_dir).expect("canonical favorite");
+
+    let response = handle_server_request_with_config_path(
+        &mut config,
+        "POST",
+        "/favorites",
+        &body,
+        Some(&config_path),
+    );
+
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        response.body["config"]["favorites"][0]["name"],
+        "Favorite Project"
+    );
+    assert_eq!(
+        response.body["config"]["favorites"][0]["path"],
+        canonical.display().to_string()
+    );
+    let saved = std::fs::read_to_string(&config_path).expect("saved config");
+    assert!(saved.contains("[[favorites]]"));
+    assert!(saved.contains("Favorite Project"));
+}
+
+#[test]
+fn favorites_remove_endpoint_removes_persisted_bookmark() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("modelrouter.toml");
+    let favorite_dir = dir.path().join("favorite-project");
+    std::fs::create_dir(&favorite_dir).expect("favorite dir");
+    let canonical = std::fs::canonicalize(&favorite_dir).expect("canonical favorite");
+    let mut config = RouterConfig::default();
+    config.favorites.push(modelrouter::PathFavorite {
+        name: "Favorite Project".to_string(),
+        path: canonical.display().to_string(),
+    });
+    std::fs::write(&config_path, toml::to_string_pretty(&config).expect("toml"))
+        .expect("write config");
+    let body = serde_json::json!({ "path": canonical.display().to_string() }).to_string();
+
+    let response = handle_server_request_with_config_path(
+        &mut config,
+        "POST",
+        "/favorites/remove",
+        &body,
+        Some(&config_path),
+    );
+
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        response.body["config"]["favorites"]
+            .as_array()
+            .expect("favorites")
+            .len(),
+        0
+    );
+    let saved = std::fs::read_to_string(&config_path).expect("saved config");
+    assert!(!saved.contains("Favorite Project"));
+}
+
+#[test]
 fn config_endpoint_returns_editable_toml_and_profiles() {
     let config = RouterConfig::default();
 
     let response = handle_server_request(&config, "GET", "/config", "");
 
     assert_eq!(response.status, 200);
+    assert_eq!(
+        response.body["config"]["favorites"]
+            .as_array()
+            .expect("favorites")
+            .len(),
+        0
+    );
     assert!(
         response.body["toml"]
             .as_str()
@@ -386,6 +555,123 @@ fn config_provider_update_saves_and_reloads_provider_settings() {
     let saved = std::fs::read_to_string(&config_path).expect("saved config");
     assert!(saved.contains("model = \"gemini-test\""));
     assert!(dir.path().join("modelrouter.toml.bak").is_file());
+}
+
+#[test]
+fn config_settings_update_saves_routing_budget_and_auth() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("modelrouter.toml");
+    let mut config = RouterConfig::default();
+    std::fs::write(&config_path, toml::to_string_pretty(&config).expect("toml"))
+        .expect("write config");
+
+    let response = handle_server_request_with_config_path(
+        &mut config,
+        "POST",
+        "/config/settings",
+        r#"{"default_provider":"gemini","code_provider":"codex","reasoning_provider":"claude","local_provider":"local","monthly_api_budget_cents":1234.5,"auth_token":"new-secret"}"#,
+        Some(&config_path),
+    );
+
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        config.routing.default_provider,
+        modelrouter::ProviderId::Gemini
+    );
+    assert_eq!(config.budget.monthly_api_budget_cents, Some(1234.5));
+    assert_eq!(config.server.auth_token.as_deref(), Some("new-secret"));
+    let saved = std::fs::read_to_string(&config_path).expect("saved config");
+    assert!(saved.contains("default_provider = \"gemini\""));
+    assert!(saved.contains("monthly_api_budget_cents = 1234.5"));
+    assert!(saved.contains("auth_token = \"new-secret\""));
+}
+
+#[test]
+fn config_settings_update_can_clear_budget_and_auth() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("modelrouter.toml");
+    let mut config = RouterConfig::default();
+    config.budget.monthly_api_budget_cents = Some(1_000.0);
+    config.server.auth_token = Some("secret-token".to_string());
+    std::fs::write(&config_path, toml::to_string_pretty(&config).expect("toml"))
+        .expect("write config");
+
+    let response = handle_server_request_with_config_path_and_headers(
+        &mut config,
+        "POST",
+        "/config/settings",
+        r#"{"monthly_api_budget_cents":null,"auth_token":null}"#,
+        Some(&config_path),
+        &[("authorization", "Bearer secret-token")],
+    );
+
+    assert_eq!(response.status, 200);
+    assert_eq!(config.budget.monthly_api_budget_cents, None);
+    assert_eq!(config.server.auth_token, None);
+    let saved = std::fs::read_to_string(&config_path).expect("saved config");
+    assert!(!saved.contains("monthly_api_budget_cents"));
+    assert!(!saved.contains("secret-token"));
+}
+
+#[test]
+fn config_rule_update_adds_and_persists_route_rule() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("modelrouter.toml");
+    let mut config = RouterConfig::default();
+    std::fs::write(&config_path, toml::to_string_pretty(&config).expect("toml"))
+        .expect("write config");
+
+    let response = handle_server_request_with_config_path(
+        &mut config,
+        "POST",
+        "/config/rule",
+        r#"{"name":"writing-to-claude","prefer":"claude","task":"writing","private":false,"long_context":true,"repo":false,"max_input_tokens":50000}"#,
+        Some(&config_path),
+    );
+
+    assert_eq!(response.status, 200);
+    let rule = config
+        .rules
+        .iter()
+        .find(|rule| rule.name == "writing-to-claude")
+        .expect("rule");
+    assert_eq!(rule.prefer, modelrouter::ProviderId::Claude);
+    assert_eq!(rule.when.task, Some(modelrouter::TaskHint::Writing));
+    assert_eq!(rule.when.long_context, Some(true));
+    assert_eq!(rule.when.max_input_tokens, Some(50_000));
+    let saved = std::fs::read_to_string(&config_path).expect("saved config");
+    assert!(saved.contains("name = \"writing-to-claude\""));
+    assert!(saved.contains("prefer = \"claude\""));
+}
+
+#[test]
+fn config_rule_remove_deletes_persisted_route_rule() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("modelrouter.toml");
+    let mut config = RouterConfig::default();
+    config.rules.push(modelrouter::RouteRule {
+        name: "private-work-stays-local".to_string(),
+        prefer: modelrouter::ProviderId::Local,
+        when: modelrouter::RouteMatch {
+            private: Some(true),
+            ..modelrouter::RouteMatch::default()
+        },
+    });
+    std::fs::write(&config_path, toml::to_string_pretty(&config).expect("toml"))
+        .expect("write config");
+
+    let response = handle_server_request_with_config_path(
+        &mut config,
+        "POST",
+        "/config/rule/remove",
+        r#"{"name":"private-work-stays-local"}"#,
+        Some(&config_path),
+    );
+
+    assert_eq!(response.status, 200);
+    assert!(config.rules.is_empty());
+    let saved = std::fs::read_to_string(&config_path).expect("saved config");
+    assert!(!saved.contains("private-work-stays-local"));
 }
 
 #[test]
