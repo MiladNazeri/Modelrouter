@@ -231,8 +231,9 @@ The GUI is the browser control plane for:
 
 - Routing and running prompts with route explanations.
 - Enabling/disabling providers, editing models/endpoints, and smoke-testing provider health.
+- Switching between Guided config for structured edits and Direct edit for raw `modelrouter.toml`.
 - Editing, validating, saving, and hot-reloading `modelrouter.toml` with a `.bak` backup.
-- Editing routing defaults, route rules, API budget, auth token, providers, profiles, and favorites through GUI controls.
+- Editing routing defaults, route rules, API budget, auth token, providers, profiles, and favorites through GUI controls backed by the loaded provider list.
 - Creating project profiles with native folder picking, in-page browsing, new-folder creation, and persistent favorites.
 - Reviewing request history, spend metrics, daemon health, and setup commands.
 

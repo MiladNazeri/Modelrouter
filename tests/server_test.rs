@@ -169,6 +169,24 @@ fn gui_endpoint_returns_html() {
         response.body["html"]
             .as_str()
             .expect("html")
+            .contains("Guided config")
+    );
+    assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
+            .contains("Direct edit")
+    );
+    assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
+            .contains("id=\"rawConfig\" class=\"mode-panel\" hidden")
+    );
+    assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
             .contains("Routing defaults")
     );
     assert!(

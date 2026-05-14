@@ -119,6 +119,21 @@ pub const GUI_HTML: &str = r#"<!doctype html>
     .select-row { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
     .select-row select { min-width: 0; }
     .select-row button { flex: 0 0 auto; }
+    .mode-bar {
+      display: inline-flex;
+      gap: 6px;
+      margin-bottom: 14px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0d0f13;
+    }
+    .mode-button.active {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: #122b2a;
+    }
+    .mode-panel[hidden] { display: none; }
     .header-token {
       width: min(260px, 34vw);
       padding: 8px 10px;
@@ -278,7 +293,92 @@ pub const GUI_HTML: &str = r#"<!doctype html>
     </section>
 
     <section id="configView" class="view">
-      <div class="grid">
+      <div class="mode-bar" role="group" aria-label="Config edit mode">
+        <button class="mode-button active" data-config-mode="guided" type="button">Guided config</button>
+        <button class="mode-button" data-config-mode="raw" type="button">Direct edit</button>
+      </div>
+      <section id="guidedConfig" class="mode-panel">
+        <div class="two">
+          <section class="panel">
+            <h2>Routing defaults</h2>
+            <div class="compact-row">
+              <div><label for="settingDefault">Default</label><select id="settingDefault"></select></div>
+              <div><label for="settingCode">Code</label><select id="settingCode"></select></div>
+              <div><label for="settingReasoning">Reasoning</label><select id="settingReasoning"></select></div>
+              <div><label for="settingLocal">Local</label><select id="settingLocal"></select></div>
+            </div>
+          </section>
+          <aside class="panel">
+            <h2>Budget and security</h2>
+            <label for="budgetCents">API budget</label>
+            <input id="budgetCents" type="number" min="0" step="0.01" placeholder="Monthly cents, blank for none">
+            <label for="authToken">Auth token</label>
+            <input id="authToken" type="password" autocomplete="off" placeholder="Blank disables daemon auth">
+            <div class="actions">
+              <button class="primary" id="saveSettings" type="button">Save settings</button>
+            </div>
+          </aside>
+        </div>
+        <div class="two stacked-panel">
+          <section class="panel">
+            <h2>Routing Rules</h2>
+            <table>
+              <thead><tr><th>Name</th><th>When</th><th>Prefer</th><th>Actions</th></tr></thead>
+              <tbody id="rules"></tbody>
+            </table>
+          </section>
+          <aside class="panel">
+            <h2>Add or update rule</h2>
+            <label for="ruleName">Name</label>
+            <input id="ruleName" placeholder="private-work-stays-local">
+            <div class="compact-row">
+              <div><label for="rulePrefer">Prefer</label><select id="rulePrefer"></select></div>
+              <div>
+                <label for="ruleTask">Task</label>
+                <select id="ruleTask">
+                  <option value="">any</option>
+                  <option value="simple">simple</option>
+                  <option value="code">code</option>
+                  <option value="deep_reasoning">deep reasoning</option>
+                  <option value="writing">writing</option>
+                </select>
+              </div>
+              <div>
+                <label for="rulePrivate">Private</label>
+                <select id="rulePrivate">
+                  <option value="">any</option>
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </select>
+              </div>
+              <div>
+                <label for="ruleLongContext">Long context</label>
+                <select id="ruleLongContext">
+                  <option value="">any</option>
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </select>
+              </div>
+            </div>
+            <div class="compact-row">
+              <div>
+                <label for="ruleRepo">Repo</label>
+                <select id="ruleRepo">
+                  <option value="">any</option>
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </select>
+              </div>
+              <div><label for="ruleMaxInputTokens">Max input tokens</label><input id="ruleMaxInputTokens" type="number" min="0" step="1" placeholder="any"></div>
+            </div>
+            <div class="actions">
+              <button class="primary" id="saveRule" type="button">Save rule</button>
+              <button id="resetRule" type="button">Clear form</button>
+            </div>
+          </aside>
+        </div>
+      </section>
+      <section id="rawConfig" class="mode-panel" hidden>
         <section class="panel">
           <h2>Direct TOML editor</h2>
           <textarea id="configText" class="config-editor" spellcheck="false"></textarea>
@@ -288,82 +388,10 @@ pub const GUI_HTML: &str = r#"<!doctype html>
             <button class="primary" id="saveConfig" type="button">Save and reload</button>
           </div>
         </section>
-        <aside class="panel">
-          <h2>Routing defaults</h2>
-          <div class="compact-row">
-            <div><label for="settingDefault">Default</label><select id="settingDefault"></select></div>
-            <div><label for="settingCode">Code</label><select id="settingCode"></select></div>
-            <div><label for="settingReasoning">Reasoning</label><select id="settingReasoning"></select></div>
-            <div><label for="settingLocal">Local</label><select id="settingLocal"></select></div>
-          </div>
-          <label for="budgetCents">API budget</label>
-          <input id="budgetCents" type="number" min="0" step="0.01" placeholder="Monthly cents, blank for none">
-          <label for="authToken">Auth token</label>
-          <input id="authToken" type="password" autocomplete="off" placeholder="Blank disables daemon auth">
-          <div class="actions">
-            <button class="primary" id="saveSettings" type="button">Save settings</button>
-          </div>
-          <h2>Status</h2>
-          <pre id="configStatus">No config loaded.</pre>
-        </aside>
-      </div>
-      <div class="two stacked-panel">
-        <section class="panel">
-          <h2>Routing Rules</h2>
-          <table>
-            <thead><tr><th>Name</th><th>When</th><th>Prefer</th><th>Actions</th></tr></thead>
-            <tbody id="rules"></tbody>
-          </table>
-        </section>
-        <aside class="panel">
-          <h2>Add or update rule</h2>
-          <label for="ruleName">Name</label>
-          <input id="ruleName" placeholder="private-work-stays-local">
-          <div class="compact-row">
-            <div><label for="rulePrefer">Prefer</label><select id="rulePrefer"></select></div>
-            <div>
-              <label for="ruleTask">Task</label>
-              <select id="ruleTask">
-                <option value="">any</option>
-                <option value="simple">simple</option>
-                <option value="code">code</option>
-                <option value="deep_reasoning">deep reasoning</option>
-                <option value="writing">writing</option>
-              </select>
-            </div>
-            <div>
-              <label for="rulePrivate">Private</label>
-              <select id="rulePrivate">
-                <option value="">any</option>
-                <option value="true">true</option>
-                <option value="false">false</option>
-              </select>
-            </div>
-            <div>
-              <label for="ruleLongContext">Long context</label>
-              <select id="ruleLongContext">
-                <option value="">any</option>
-                <option value="true">true</option>
-                <option value="false">false</option>
-              </select>
-            </div>
-          </div>
-          <div class="compact-row">
-            <div>
-              <label for="ruleRepo">Repo</label>
-              <select id="ruleRepo">
-                <option value="">any</option>
-                <option value="true">true</option>
-                <option value="false">false</option>
-              </select>
-            </div>
-            <div><label for="ruleMaxInputTokens">Max input tokens</label><input id="ruleMaxInputTokens" type="number" min="0" step="1" placeholder="any"></div>
-          </div>
-          <div class="actions">
-            <button class="primary" id="saveRule" type="button">Save rule</button>
-            <button id="resetRule" type="button">Clear form</button>
-          </div>
-        </aside>
+      </section>
+      <div class="panel stacked-panel">
+        <h2>Status</h2>
+        <pre id="configStatus">No config loaded.</pre>
       </div>
     </section>
 
@@ -463,10 +491,60 @@ pub const GUI_HTML: &str = r#"<!doctype html>
       return item;
     }
 
-    function fillProviderSelect(select, includeAuto) {
+    function providerOptions() {
+      if (state.config && Array.isArray(state.config.providers)) {
+        return state.config.providers.map(provider => ({
+          id: provider.id,
+          label: providerLabel(provider)
+        }));
+      }
+      return providerIds.map(id => ({ id, label: id }));
+    }
+
+    function providerLabel(provider) {
+      const parts = [provider.id];
+      if (provider.model) parts.push(provider.model);
+      if (provider.billing) parts.push(provider.billing);
+      if (!provider.enabled) parts.push('disabled');
+      return parts.join(' - ');
+    }
+
+    function fillProviderSelect(select, mode) {
+      const current = select.value;
       select.replaceChildren();
-      if (includeAuto) select.append(option('', 'auto', true));
-      for (const id of providerIds) select.append(option(id, id, false));
+      if (mode === 'auto') select.append(option('', 'auto', current === ''));
+      if (mode === 'inherit') select.append(option('', 'inherit', current === ''));
+      for (const provider of providerOptions()) {
+        select.append(option(provider.id, provider.label, provider.id === current));
+      }
+    }
+
+    function refreshProviderSelects() {
+      const modes = new Map([
+        ['prefer', 'auto'],
+        ['profileDefault', 'inherit'],
+        ['profileCode', 'inherit'],
+        ['profileReasoning', 'inherit'],
+        ['profileLocal', 'inherit']
+      ]);
+      for (const select of providerSelects()) {
+        fillProviderSelect(select, modes.get(select.id) || 'required');
+      }
+    }
+
+    function providerSelects() {
+      return [
+        document.getElementById('prefer'),
+        document.getElementById('settingDefault'),
+        document.getElementById('settingCode'),
+        document.getElementById('settingReasoning'),
+        document.getElementById('settingLocal'),
+        document.getElementById('rulePrefer'),
+        document.getElementById('profileDefault'),
+        document.getElementById('profileCode'),
+        document.getElementById('profileReasoning'),
+        document.getElementById('profileLocal')
+      ];
     }
 
     function favorites() {
@@ -493,6 +571,7 @@ pub const GUI_HTML: &str = r#"<!doctype html>
     function applySavedConfig(json) {
       if (json.config) state.config = json.config;
       if (json.toml) configText().value = json.toml;
+      refreshProviderSelects();
       renderProviders();
       renderProfiles();
       renderFavorites();
@@ -1085,18 +1164,15 @@ pub const GUI_HTML: &str = r#"<!doctype html>
       await loadHistory();
     }
 
-    for (const select of [
-      document.getElementById('prefer'),
-      document.getElementById('settingDefault'),
-      document.getElementById('settingCode'),
-      document.getElementById('settingReasoning'),
-      document.getElementById('settingLocal'),
-      document.getElementById('rulePrefer'),
-      document.getElementById('profileDefault'),
-      document.getElementById('profileCode'),
-      document.getElementById('profileReasoning'),
-      document.getElementById('profileLocal')
-    ]) fillProviderSelect(select, select.id === 'prefer');
+    function setConfigMode(mode) {
+      document.querySelectorAll('[data-config-mode]').forEach(button => {
+        button.classList.toggle('active', button.dataset.configMode === mode);
+      });
+      document.getElementById('guidedConfig').hidden = mode !== 'guided';
+      document.getElementById('rawConfig').hidden = mode !== 'raw';
+    }
+
+    refreshProviderSelects();
     refreshFavoriteSelects();
     resetRuleForm();
     document.getElementById('apiToken').value = state.authToken;
@@ -1113,6 +1189,9 @@ pub const GUI_HTML: &str = r#"<!doctype html>
         document.querySelectorAll('.tab').forEach(item => item.classList.toggle('active', item === tab));
         document.querySelectorAll('.view').forEach(view => view.classList.toggle('active', view.id === tab.dataset.view));
       };
+    });
+    document.querySelectorAll('[data-config-mode]').forEach(button => {
+      button.onclick = () => setConfigMode(button.dataset.configMode);
     });
     document.getElementById('routeBtn').onclick = () => post('/route');
     document.getElementById('runBtn').onclick = () => post('/run');
