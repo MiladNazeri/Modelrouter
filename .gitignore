@@ -2,6 +2,7 @@
 /.modelrouter/
 AGENTS.md
 modelrouter.toml
+modelrouter.toml.*
 .env
 .env.*
 *.jsonl

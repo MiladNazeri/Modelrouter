@@ -17,6 +17,22 @@ struct TaskProfile {
     low_risk: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RouteClassification {
+    #[serde(default)]
+    pub task: Option<TaskHint>,
+    #[serde(default)]
+    pub private: Option<bool>,
+    #[serde(default)]
+    pub long_context: Option<bool>,
+    #[serde(default)]
+    pub repo: Option<bool>,
+    #[serde(default)]
+    pub confidence: Option<f32>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 struct ScoredProvider<'a> {
     provider: &'a ProviderConfig,
@@ -32,6 +48,7 @@ pub struct RouteRequest {
     estimated_input_tokens: Option<u32>,
     estimated_output_tokens: Option<u32>,
     hint: Option<TaskHint>,
+    classification: Option<RouteClassification>,
     actual_monthly_api_spend_cents: Option<f64>,
 }
 
@@ -44,6 +61,7 @@ impl RouteRequest {
             estimated_input_tokens: None,
             estimated_output_tokens: None,
             hint: None,
+            classification: None,
             actual_monthly_api_spend_cents: None,
         }
     }
@@ -70,6 +88,11 @@ impl RouteRequest {
 
     pub fn with_hint(mut self, hint: TaskHint) -> Self {
         self.hint = Some(hint);
+        self
+    }
+
+    pub fn with_classification(mut self, classification: RouteClassification) -> Self {
+        self.classification = Some(classification);
         self
     }
 
@@ -131,7 +154,13 @@ impl Router {
             .estimated_input_tokens
             .unwrap_or_else(|| estimate_tokens(&request.prompt));
         let output_tokens = request.estimated_output_tokens.unwrap_or(600);
-        let profile = task_profile(&request.prompt, input_tokens, request.hint);
+        let profile = task_profile(
+            &request.prompt,
+            input_tokens,
+            request.hint,
+            request.classification.as_ref(),
+        );
+        let classification_reasons = classification_reasons(request.classification.as_ref());
 
         if let Some(provider_id) = request.preferred_provider {
             let provider = self
@@ -166,17 +195,13 @@ impl Router {
                 request.actual_monthly_api_spend_cents,
             )
         {
-            return Ok(self.decision(
-                provider,
-                input_tokens,
-                output_tokens,
-                0.96,
-                vec![format!(
-                    "Matched routing rule {}; preferred {}.",
-                    rule.name,
-                    provider.id.label()
-                )],
+            let mut reasons = classification_reasons.clone();
+            reasons.push(format!(
+                "Matched routing rule {}; preferred {}.",
+                rule.name,
+                provider.id.label()
             ));
+            return Ok(self.decision(provider, input_tokens, output_tokens, 0.96, reasons));
         }
 
         let scored = self.scored_candidates(
@@ -194,6 +219,7 @@ impl Router {
                 "Scored eligible providers by task fit, cost, context capacity, and routing policy."
                     .to_string(),
             ];
+            reasons.extend(classification_reasons);
             if let Some(reason) = self.unavailable_preferred_reason(
                 &profile,
                 best.provider.id,
@@ -431,40 +457,98 @@ fn estimate_tokens(prompt: &str) -> u32 {
     u32::try_from(estimate.max(1)).unwrap_or(u32::MAX)
 }
 
-fn task_profile(prompt: &str, input_tokens: u32, hint: Option<TaskHint>) -> TaskProfile {
+fn classification_reasons(classification: Option<&RouteClassification>) -> Vec<String> {
+    let Some(classification) = classification else {
+        return Vec::new();
+    };
+    let mut parts = Vec::new();
+    if let Some(task) = classification.task {
+        parts.push(format!("task={task:?}"));
+    }
+    if let Some(private) = classification.private {
+        parts.push(format!("private={private}"));
+    }
+    if let Some(long_context) = classification.long_context {
+        parts.push(format!("long_context={long_context}"));
+    }
+    if let Some(repo) = classification.repo {
+        parts.push(format!("repo={repo}"));
+    }
+    if let Some(confidence) = classification.confidence {
+        parts.push(format!("confidence={confidence:.2}"));
+    }
+    let mut reason = if parts.is_empty() {
+        "LLM classifier supplied routing signals.".to_string()
+    } else {
+        format!(
+            "LLM classifier supplied routing signals: {}.",
+            parts.join(", ")
+        )
+    };
+    if let Some(note) = classification
+        .reason
+        .as_deref()
+        .filter(|note| !note.is_empty())
+    {
+        reason.push(' ');
+        reason.push_str(note);
+    }
+    vec![reason]
+}
+
+fn task_profile(
+    prompt: &str,
+    input_tokens: u32,
+    hint: Option<TaskHint>,
+    classification: Option<&RouteClassification>,
+) -> TaskProfile {
     let normalized = prompt.to_ascii_lowercase();
-    let inferred = hint.unwrap_or_else(|| infer_task_hint(&normalized, input_tokens));
-    let codebase_editing = contains_any(
-        &normalized,
-        &[
-            "repo",
-            "codebase",
-            "edit",
-            "fix",
-            "failing",
-            "refactor",
-            "files",
-            "parser",
-            "pull request",
-        ],
-    );
+    let inferred = hint
+        .or_else(|| classification.and_then(|classification| classification.task))
+        .unwrap_or_else(|| infer_task_hint(&normalized, input_tokens));
+    let codebase_editing = classification
+        .and_then(|classification| classification.repo)
+        .unwrap_or_else(|| {
+            contains_any(
+                &normalized,
+                &[
+                    "repo",
+                    "codebase",
+                    "edit",
+                    "fix",
+                    "failing",
+                    "refactor",
+                    "files",
+                    "parser",
+                    "pull request",
+                ],
+            )
+        });
     let tests = contains_any(&normalized, &["test", "tests", "tdd", "failing"]);
-    let privacy_sensitive = contains_any(
-        &normalized,
-        &[
-            "private",
-            "personal",
-            "journal",
-            "confidential",
-            "secret",
-            "keep it local",
-        ],
-    );
-    let long_context = input_tokens > 32_000
-        || contains_any(
-            &normalized,
-            &["long context", "entire repo", "dossier", "large document"],
-        );
+    let privacy_sensitive = classification
+        .and_then(|classification| classification.private)
+        .unwrap_or_else(|| {
+            contains_any(
+                &normalized,
+                &[
+                    "private",
+                    "personal",
+                    "journal",
+                    "confidential",
+                    "secret",
+                    "keep it local",
+                ],
+            )
+        });
+    let long_context = classification
+        .and_then(|classification| classification.long_context)
+        .unwrap_or_else(|| {
+            input_tokens > 32_000
+                || contains_any(
+                    &normalized,
+                    &["long context", "entire repo", "dossier", "large document"],
+                )
+        });
     let low_risk = inferred == TaskHint::Simple && input_tokens <= 4_000;
 
     TaskProfile {

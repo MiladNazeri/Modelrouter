@@ -1,3 +1,4 @@
+mod classification;
 mod cli;
 mod compression;
 mod config;
@@ -15,11 +16,15 @@ mod server;
 mod spend;
 mod tui;
 
+pub use classification::{
+    ClassificationError, build_classification_prompt, classify_prompt_with_runner,
+    parse_classification_response,
+};
 pub use compression::{CompressedPrompt, compress_prompt};
 pub use config::{
-    BillingMode, Capability, PathFavorite, ProjectProfile, ProviderConfig, ProviderId,
-    ProviderKind, RouteMatch, RouteRule, RouterConfig, RoutingConfig, ServerConfig, TaskHint,
-    apply_project_profile, load_config,
+    BillingMode, Capability, ClassificationConfig, ClassificationMode, PathFavorite,
+    ProjectProfile, ProviderConfig, ProviderId, ProviderKind, RouteMatch, RouteRule, RouterConfig,
+    RoutingConfig, ServerConfig, TaskHint, apply_project_profile, load_config,
 };
 pub use feedback::{FeedbackEntry, append_feedback};
 pub use gui::GUI_HTML;
@@ -41,7 +46,7 @@ pub use provider_http::{
     parse_openai_compatible_response_with_usage, run_http_provider, run_http_provider_with_usage,
 };
 pub use queue::{ExecutionQueue, QueueJob, QueueStatus};
-pub use router::{RouteDecision, RouteRequest, Router, RouterError};
+pub use router::{RouteClassification, RouteDecision, RouteRequest, Router, RouterError};
 pub use server::{
     MAX_REQUEST_BODY_BYTES, ServerResponse, handle_server_request,
     handle_server_request_with_config_path, handle_server_request_with_config_path_and_headers,

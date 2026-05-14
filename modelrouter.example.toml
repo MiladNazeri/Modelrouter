@@ -101,6 +101,12 @@ code_provider = "codex"
 reasoning_provider = "claude"
 local_provider = "local"
 
+[classification]
+# heuristic = deterministic rules only. llm = ask the classifier provider for task/privacy/context signals before routing.
+mode = "heuristic"
+# provider = "local"
+max_prompt_chars = 12000
+
 [budget]
 # Optional hard stop for API-backed providers. Subscription/local routes do not count against it.
 monthly_api_budget_cents = 5000.0

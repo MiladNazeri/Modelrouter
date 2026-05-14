@@ -1,5 +1,6 @@
 use modelrouter::{
-    Capability, ProviderId, RouteRequest, Router, RouterConfig, RouterError, TaskHint,
+    Capability, ProviderId, RouteClassification, RouteRequest, Router, RouterConfig, RouterError,
+    TaskHint,
 };
 
 #[test]
@@ -86,6 +87,31 @@ fn infers_codebase_editing_without_an_explicit_hint() {
             .reasons
             .iter()
             .any(|reason| reason.contains("codebase editing"))
+    );
+}
+
+#[test]
+fn llm_classification_can_supply_task_signals() {
+    let router = Router::new(RouterConfig::default());
+
+    let decision = router
+        .route(
+            RouteRequest::new("Please handle this.").with_classification(RouteClassification {
+                task: Some(TaskHint::Code),
+                repo: Some(true),
+                confidence: Some(0.91),
+                reason: Some("Needs repo edits.".to_string()),
+                ..RouteClassification::default()
+            }),
+        )
+        .expect("route should succeed");
+
+    assert_eq!(decision.provider, ProviderId::Codex);
+    assert!(
+        decision
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("LLM classifier supplied routing signals"))
     );
 }
 

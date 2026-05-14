@@ -52,6 +52,7 @@ modelrouter
 ## What It Routes On
 
 - Task type inferred from the prompt or `--hint`: simple, code, deep reasoning, or writing.
+- Optional LLM-assisted classification that turns the prompt into task/privacy/context signals before deterministic routing.
 - Provider capabilities: codebase editing, tests, long context, privacy, local execution, writing, reasoning.
 - Billing mode: `local`, `subscription`, or `api`.
 - Estimated input/output tokens and optional max cost.
@@ -183,6 +184,17 @@ monthly_api_budget_cents = 5000.0
 ```
 
 Subscription and local providers do not count against this budget.
+
+LLM-assisted classification is optional. It asks one configured provider to return structured task/privacy/context signals, then the deterministic router still chooses the final provider:
+
+```toml
+[classification]
+mode = "llm"
+provider = "local"
+max_prompt_chars = 12000
+```
+
+Use `mode = "heuristic"` to disable the classifier. When `provider` is omitted, the router uses `routing.local_provider` for classification.
 
 ## Spend Tracking
 

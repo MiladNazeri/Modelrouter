@@ -199,6 +199,18 @@ fn gui_endpoint_returns_html() {
         response.body["html"]
             .as_str()
             .expect("html")
+            .contains("LLM assisted")
+    );
+    assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
+            .contains("Classifier provider")
+    );
+    assert!(
+        response.body["html"]
+            .as_str()
+            .expect("html")
             .contains("API budget")
     );
     assert!(
@@ -587,7 +599,7 @@ fn config_settings_update_saves_routing_budget_and_auth() {
         &mut config,
         "POST",
         "/config/settings",
-        r#"{"default_provider":"gemini","code_provider":"codex","reasoning_provider":"claude","local_provider":"local","monthly_api_budget_cents":1234.5,"auth_token":"new-secret"}"#,
+        r#"{"default_provider":"gemini","code_provider":"codex","reasoning_provider":"claude","local_provider":"local","classification_mode":"llm","classification_provider":"local","classification_max_prompt_chars":8000,"monthly_api_budget_cents":1234.5,"auth_token":"new-secret"}"#,
         Some(&config_path),
     );
 
@@ -596,10 +608,23 @@ fn config_settings_update_saves_routing_budget_and_auth() {
         config.routing.default_provider,
         modelrouter::ProviderId::Gemini
     );
+    assert_eq!(
+        config.classification.mode,
+        modelrouter::ClassificationMode::Llm
+    );
+    assert_eq!(
+        config.classification.provider,
+        Some(modelrouter::ProviderId::Local)
+    );
+    assert_eq!(config.classification.max_prompt_chars, 8_000);
     assert_eq!(config.budget.monthly_api_budget_cents, Some(1234.5));
     assert_eq!(config.server.auth_token.as_deref(), Some("new-secret"));
     let saved = std::fs::read_to_string(&config_path).expect("saved config");
     assert!(saved.contains("default_provider = \"gemini\""));
+    assert!(saved.contains("[classification]"));
+    assert!(saved.contains("mode = \"llm\""));
+    assert!(saved.contains("provider = \"local\""));
+    assert!(saved.contains("max_prompt_chars = 8000"));
     assert!(saved.contains("monthly_api_budget_cents = 1234.5"));
     assert!(saved.contains("auth_token = \"new-secret\""));
 }
@@ -629,6 +654,72 @@ fn config_settings_update_can_clear_budget_and_auth() {
     let saved = std::fs::read_to_string(&config_path).expect("saved config");
     assert!(!saved.contains("monthly_api_budget_cents"));
     assert!(!saved.contains("secret-token"));
+}
+
+#[test]
+fn route_endpoint_can_use_llm_classifier_before_routing() {
+    let mut config = RouterConfig::default();
+    config.classification.mode = modelrouter::ClassificationMode::Llm;
+    config.classification.provider = Some(modelrouter::ProviderId::Local);
+    let report = health_report_with(&config, |_| true, |_| true);
+
+    let response = handle_server_request_with_runner_and_report(
+        &config,
+        "POST",
+        "/route",
+        r#"{"prompt":"Please handle this ambiguous request."}"#,
+        |provider: &ProviderConfig, prompt: &str, _cwd: Option<&Path>| {
+            assert_eq!(provider.id, modelrouter::ProviderId::Local);
+            assert!(prompt.contains("Classify this request"));
+            Ok(r#"{"task":"code","private":false,"long_context":false,"repo":true,"confidence":0.93,"reason":"repo edit"}"#.to_string())
+        },
+        Some(&report),
+    );
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body["provider"], "codex");
+    assert!(
+        response.body["reasons"]
+            .as_array()
+            .expect("reasons")
+            .iter()
+            .any(|reason| reason
+                .as_str()
+                .expect("reason")
+                .contains("LLM classifier supplied routing signals"))
+    );
+}
+
+#[test]
+fn route_endpoint_falls_back_when_llm_classifier_fails() {
+    let mut config = RouterConfig::default();
+    config.classification.mode = modelrouter::ClassificationMode::Llm;
+    config.classification.provider = Some(modelrouter::ProviderId::Local);
+    let report = health_report_with(&config, |_| true, |_| true);
+
+    let response = handle_server_request_with_runner_and_report(
+        &config,
+        "POST",
+        "/route",
+        r#"{"prompt":"Summarize this short note."}"#,
+        |_provider: &ProviderConfig, _prompt: &str, _cwd: Option<&Path>| {
+            Err("classifier offline".to_string())
+        },
+        Some(&report),
+    );
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body["provider"], "local");
+    assert!(
+        response.body["reasons"]
+            .as_array()
+            .expect("reasons")
+            .iter()
+            .any(|reason| reason
+                .as_str()
+                .expect("reason")
+                .contains("LLM classifier unavailable"))
+    );
 }
 
 #[test]

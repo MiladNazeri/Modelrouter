@@ -14,8 +14,8 @@ use crate::{
     ExecutionQueue, FeedbackEntry, GUI_HTML, PathFavorite, ProjectProfile, ProviderConfig,
     ProviderHealth, ProviderId, RequestLogEntry, RouteDecision, RouteMatch, RouteRequest,
     RouteRule, Router, RouterConfig, TaskHint, append_feedback, append_request_log,
-    apply_project_profile, availability_filtered_config, health_report, load_metrics,
-    metrics_from_logs, run_provider,
+    apply_project_profile, availability_filtered_config, classify_prompt_with_runner,
+    health_report, load_metrics, metrics_from_logs, run_provider,
 };
 
 pub const MAX_REQUEST_BODY_BYTES: usize = 1_048_576;
@@ -110,6 +110,8 @@ struct SettingsUpdatePayload {
     reasoning_provider: Option<ProviderId>,
     #[serde(default)]
     local_provider: Option<ProviderId>,
+    #[serde(default)]
+    classification_mode: Option<crate::ClassificationMode>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -158,6 +160,11 @@ struct ServerRuntime<'a> {
     config_path: Option<&'a Path>,
     headers: &'a [(&'a str, &'a str)],
     directory_picker: &'a dyn Fn() -> Result<Option<PathBuf>, String>,
+}
+
+struct ClassifiedRouteRequest {
+    request: RouteRequest,
+    fallback_reasons: Vec<String>,
 }
 
 pub fn handle_server_request(
@@ -456,7 +463,7 @@ where
     }
 
     match route_path {
-        "/route" => route_response(config, body, report),
+        "/route" => route_response(config, body, report, &runner),
         "/run" => run_response(config, body, runner, report),
         "/queue" => queue_response(config, body, runner, report, runtime.queue),
         "/feedback" => feedback_response(body, runtime.log_path),
@@ -550,15 +557,23 @@ where
     Ok(())
 }
 
-fn route_response(config: &RouterConfig, body: &str, report: &[ProviderHealth]) -> ServerResponse {
+fn route_response<F>(
+    config: &RouterConfig,
+    body: &str,
+    report: &[ProviderHealth],
+    runner: &F,
+) -> ServerResponse
+where
+    F: Fn(&ProviderConfig, &str, Option<&Path>) -> Result<String, String>,
+{
     let payload = match parse_payload(body) {
         Ok(payload) => payload,
         Err(response) => return response,
     };
-    let request = build_route_request(&payload);
     let profiled = config_for_payload(config, &payload);
     let filtered = availability_filtered_config(&profiled, report);
-    match Router::new(filtered).route(request) {
+    let request = build_classified_route_request(&filtered, &payload, runner);
+    match route_with_fallback_reasons(&filtered, request) {
         Ok(decision) => json_response(200, json!(decision)),
         Err(error) => json_response(
             422,
@@ -580,10 +595,10 @@ where
         Ok(payload) => payload,
         Err(response) => return response,
     };
-    let request = build_route_request(&payload);
     let profiled = config_for_payload(config, &payload);
     let filtered = availability_filtered_config(&profiled, report);
-    let decision = match Router::new(filtered).route(request) {
+    let request = build_classified_route_request(&filtered, &payload, &runner);
+    let decision = match route_with_fallback_reasons(&filtered, request) {
         Ok(decision) => decision,
         Err(error) => {
             return json_response(
@@ -625,13 +640,12 @@ where
         Err(response) => return response,
     };
     let prompt = payload.prompt.clone();
+    let profiled = config_for_payload(config, &payload);
+    let filtered = availability_filtered_config(&profiled, report);
+    let request = build_classified_route_request(&filtered, &payload, &runner);
     let id = queue.submit(prompt, |queued_prompt| {
-        let request = build_route_request(&payload);
-        let profiled = config_for_payload(config, &payload);
-        let filtered = availability_filtered_config(&profiled, report);
-        let decision = Router::new(filtered)
-            .route(request)
-            .map_err(|error| error.to_string())?;
+        let decision =
+            route_with_fallback_reasons(&filtered, request).map_err(|error| error.to_string())?;
         let provider = profiled
             .provider(decision.provider)
             .ok_or_else(|| format!("{} is not configured", decision.provider))?;
@@ -831,6 +845,33 @@ fn settings_update_response(
     }
     if let Some(provider) = payload.local_provider {
         next.routing.local_provider = provider;
+    }
+    if let Some(mode) = payload.classification_mode {
+        next.classification.mode = mode;
+    }
+    if let Some(value) = raw.get("classification_provider").cloned() {
+        let Some(provider) = parse_optional_provider(value) else {
+            return json_response(
+                422,
+                json!({
+                    "error": "settings_invalid",
+                    "message": "classification_provider must be a provider id or null",
+                }),
+            );
+        };
+        next.classification.provider = provider;
+    }
+    if let Some(value) = raw.get("classification_max_prompt_chars").cloned() {
+        let Some(max_prompt_chars) = parse_classifier_max_prompt_chars(value) else {
+            return json_response(
+                422,
+                json!({
+                    "error": "settings_invalid",
+                    "message": "classification_max_prompt_chars must be between 1 and 200000",
+                }),
+            );
+        };
+        next.classification.max_prompt_chars = max_prompt_chars;
     }
     if let Some(value) = raw.get("monthly_api_budget_cents").cloned() {
         let Some(budget) = parse_optional_non_negative_f64(value) else {
@@ -1485,6 +1526,46 @@ fn parse_optional_string(value: Value) -> Option<Option<String>> {
     }
 }
 
+fn parse_optional_provider(value: Value) -> Option<Option<ProviderId>> {
+    match value {
+        Value::Null => Some(None),
+        Value::String(text) => {
+            let text = text.trim();
+            if text.is_empty() {
+                Some(None)
+            } else {
+                text.parse::<ProviderId>().ok().map(Some)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn parse_classifier_max_prompt_chars(value: Value) -> Option<usize> {
+    match value {
+        Value::Null => Some(crate::ClassificationConfig::default().max_prompt_chars),
+        Value::Number(number) => number.as_u64().and_then(valid_classifier_max_prompt_chars),
+        Value::String(text) => {
+            let text = text.trim();
+            if text.is_empty() {
+                Some(crate::ClassificationConfig::default().max_prompt_chars)
+            } else {
+                text.parse::<u64>()
+                    .ok()
+                    .and_then(valid_classifier_max_prompt_chars)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn valid_classifier_max_prompt_chars(value: u64) -> Option<usize> {
+    (1..=200_000)
+        .contains(&value)
+        .then(|| usize::try_from(value).ok())
+        .flatten()
+}
+
 fn persist_config(
     config: &mut RouterConfig,
     next: RouterConfig,
@@ -1583,6 +1664,53 @@ fn build_route_request(payload: &RoutePayload) -> RouteRequest {
         request = request.with_hint(hint);
     }
     request
+}
+
+fn build_classified_route_request<F>(
+    config: &RouterConfig,
+    payload: &RoutePayload,
+    runner: &F,
+) -> ClassifiedRouteRequest
+where
+    F: Fn(&ProviderConfig, &str, Option<&Path>) -> Result<String, String>,
+{
+    let mut request = build_route_request(payload);
+    let mut fallback_reasons = Vec::new();
+    if config.classification.mode == crate::ClassificationMode::Llm
+        && payload.prefer.is_none()
+        && payload.hint.is_none()
+    {
+        match classify_prompt_with_runner(
+            config,
+            &payload.prompt,
+            |provider, classifier_prompt, _cwd| runner(provider, classifier_prompt, None),
+        ) {
+            Ok(Some(classification)) => {
+                request = request.with_classification(classification);
+            }
+            Ok(None) => {}
+            Err(message) => fallback_reasons.push(format!(
+                "LLM classifier unavailable: {message}; used heuristic classification."
+            )),
+        }
+    }
+    ClassifiedRouteRequest {
+        request,
+        fallback_reasons,
+    }
+}
+
+fn route_with_fallback_reasons(
+    config: &RouterConfig,
+    classified: ClassifiedRouteRequest,
+) -> Result<RouteDecision, crate::RouterError> {
+    let mut decision = Router::new(config.clone()).route(classified.request)?;
+    if !classified.fallback_reasons.is_empty() {
+        let mut reasons = classified.fallback_reasons;
+        reasons.extend(decision.reasons);
+        decision.reasons = reasons;
+    }
+    Ok(decision)
 }
 
 fn config_for_payload(config: &RouterConfig, payload: &RoutePayload) -> RouterConfig {

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use modelrouter::{BillingMode, ProviderId, RouterConfig, load_config};
+use modelrouter::{BillingMode, ClassificationMode, ProviderId, RouterConfig, load_config};
 
 #[test]
 fn default_config_includes_extra_provider_presets() {
@@ -16,6 +16,7 @@ fn default_config_includes_extra_provider_presets() {
         config.provider(ProviderId::Gemini).expect("gemini").billing,
         BillingMode::Subscription
     );
+    assert_eq!(config.classification.mode, ClassificationMode::Heuristic);
     assert!(
         !config
             .provider(ProviderId::LmStudio)
@@ -75,6 +76,7 @@ local_provider = "local"
     assert_eq!(local.model, "qwen2.5-coder:7b");
     assert_eq!(local.billing, BillingMode::Api);
     assert_eq!(config.routing.code_provider, ProviderId::Codex);
+    assert_eq!(config.classification.max_prompt_chars, 12_000);
 }
 
 #[test]
@@ -111,4 +113,6 @@ fn example_config_loads() {
             .enabled
     );
     assert_eq!(config.favorites[0].name, "Projects");
+    assert_eq!(config.classification.mode, ClassificationMode::Heuristic);
+    assert_eq!(config.classification.max_prompt_chars, 12_000);
 }

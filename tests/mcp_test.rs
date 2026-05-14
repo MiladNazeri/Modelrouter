@@ -53,6 +53,29 @@ fn mcp_route_tool_returns_decision_content() {
 }
 
 #[test]
+fn mcp_route_tool_uses_llm_classifier_when_enabled() {
+    let mut config = RouterConfig::default();
+    config.classification.mode = modelrouter::ClassificationMode::Llm;
+    config.classification.provider = Some(modelrouter::ProviderId::Local);
+    let response = handle_mcp_message_with_runner(
+        &config,
+        r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"modelrouter_route","arguments":{"prompt":"Please handle this ambiguous request."}}}"#,
+        |provider: &ProviderConfig, prompt: &str, _cwd: Option<&Path>| {
+            assert_eq!(provider.id, modelrouter::ProviderId::Local);
+            assert!(prompt.contains("Classify this request"));
+            Ok(r#"{"task":"code","repo":true,"confidence":0.9}"#.to_string())
+        },
+    )
+    .expect("tools/call response");
+
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("content text");
+    assert!(text.contains("\"provider\":\"codex\""));
+    assert!(text.contains("LLM classifier supplied routing signals"));
+}
+
+#[test]
 fn mcp_run_tool_uses_runner() {
     let config = RouterConfig::default();
     let response = handle_mcp_message_with_runner(

@@ -5,7 +5,10 @@ use std::{
 
 use serde_json::{Value, json};
 
-use crate::{ProviderConfig, RouteRequest, Router, RouterConfig, run_provider};
+use crate::{
+    ClassificationMode, ProviderConfig, RouteDecision, RouteRequest, Router, RouterConfig,
+    classify_prompt_with_runner, run_provider,
+};
 
 pub fn handle_mcp_message(config: &RouterConfig, message: &str) -> Option<Value> {
     handle_mcp_message_with_runner(config, message, |provider, prompt, cwd| {
@@ -94,7 +97,7 @@ where
     }
 
     match name {
-        "modelrouter_route" => match route(config, prompt, &arguments) {
+        "modelrouter_route" => match route(config, prompt, &arguments, &runner) {
             Ok(text) => tool_text_response(id, text),
             Err(message) => error_response(id, -32000, &message),
         },
@@ -110,11 +113,16 @@ where
     }
 }
 
-fn route(config: &RouterConfig, prompt: &str, arguments: &Value) -> Result<String, String> {
-    let request = route_request(prompt, arguments)?;
-    let decision = Router::new(config.clone())
-        .route(request)
-        .map_err(|error| error.to_string())?;
+fn route<F>(
+    config: &RouterConfig,
+    prompt: &str,
+    arguments: &Value,
+    runner: &F,
+) -> Result<String, String>
+where
+    F: Fn(&ProviderConfig, &str, Option<&Path>) -> Result<String, String>,
+{
+    let decision = route_decision(config, prompt, arguments, runner)?;
     serde_json::to_string(&decision).map_err(|error| error.to_string())
 }
 
@@ -127,10 +135,7 @@ fn run<F>(
 where
     F: Fn(&ProviderConfig, &str, Option<&Path>) -> Result<String, String>,
 {
-    let request = route_request(prompt, arguments)?;
-    let decision = Router::new(config.clone())
-        .route(request)
-        .map_err(|error| error.to_string())?;
+    let decision = route_decision(config, prompt, arguments, &runner)?;
     let provider = config
         .provider(decision.provider)
         .ok_or_else(|| format!("{} is not configured", decision.provider))?;
@@ -147,10 +152,7 @@ fn broker<F>(
 where
     F: Fn(&ProviderConfig, &str, Option<&Path>) -> Result<String, String>,
 {
-    let request = route_request(prompt, arguments)?;
-    let decision = Router::new(config.clone())
-        .route(request)
-        .map_err(|error| error.to_string())?;
+    let decision = route_decision(config, prompt, arguments, &runner)?;
     let provider = config
         .provider(decision.provider)
         .ok_or_else(|| format!("{} is not configured", decision.provider))?;
@@ -170,6 +172,52 @@ fn route_request(prompt: &str, arguments: &Value) -> Result<RouteRequest, String
         request = request.prefer(prefer.parse()?);
     }
     Ok(request)
+}
+
+fn route_decision<F>(
+    config: &RouterConfig,
+    prompt: &str,
+    arguments: &Value,
+    runner: &F,
+) -> Result<RouteDecision, String>
+where
+    F: Fn(&ProviderConfig, &str, Option<&Path>) -> Result<String, String>,
+{
+    let (request, fallback_reasons) = classified_route_request(config, prompt, arguments, runner)?;
+    let mut decision = Router::new(config.clone())
+        .route(request)
+        .map_err(|error| error.to_string())?;
+    if !fallback_reasons.is_empty() {
+        let mut reasons = fallback_reasons;
+        reasons.extend(decision.reasons);
+        decision.reasons = reasons;
+    }
+    Ok(decision)
+}
+
+fn classified_route_request<F>(
+    config: &RouterConfig,
+    prompt: &str,
+    arguments: &Value,
+    runner: &F,
+) -> Result<(RouteRequest, Vec<String>), String>
+where
+    F: Fn(&ProviderConfig, &str, Option<&Path>) -> Result<String, String>,
+{
+    let mut request = route_request(prompt, arguments)?;
+    let mut fallback_reasons = Vec::new();
+    if config.classification.mode == ClassificationMode::Llm && arguments.get("prefer").is_none() {
+        match classify_prompt_with_runner(config, prompt, |provider, classifier_prompt, _cwd| {
+            runner(provider, classifier_prompt, None)
+        }) {
+            Ok(Some(classification)) => request = request.with_classification(classification),
+            Ok(None) => {}
+            Err(message) => fallback_reasons.push(format!(
+                "LLM classifier unavailable: {message}; used heuristic classification."
+            )),
+        }
+    }
+    Ok((request, fallback_reasons))
 }
 
 fn tool_text_response(id: Value, text: String) -> Value {

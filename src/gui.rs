@@ -314,6 +314,16 @@ pub const GUI_HTML: &str = r#"<!doctype html>
             <input id="budgetCents" type="number" min="0" step="0.01" placeholder="Monthly cents, blank for none">
             <label for="authToken">Auth token</label>
             <input id="authToken" type="password" autocomplete="off" placeholder="Blank disables daemon auth">
+            <h2>Classification</h2>
+            <label for="classifierMode">Classifier</label>
+            <select id="classifierMode">
+              <option value="heuristic">Heuristic only</option>
+              <option value="llm">LLM assisted</option>
+            </select>
+            <label for="classifierProvider">Classifier provider</label>
+            <select id="classifierProvider"></select>
+            <label for="classifierMaxPromptChars">Classifier prompt limit</label>
+            <input id="classifierMaxPromptChars" type="number" min="1" max="200000" step="1000">
             <div class="actions">
               <button class="primary" id="saveSettings" type="button">Save settings</button>
             </div>
@@ -514,6 +524,7 @@ pub const GUI_HTML: &str = r#"<!doctype html>
       select.replaceChildren();
       if (mode === 'auto') select.append(option('', 'auto', current === ''));
       if (mode === 'inherit') select.append(option('', 'inherit', current === ''));
+      if (mode === 'optional') select.append(option('', 'local default', current === ''));
       for (const provider of providerOptions()) {
         select.append(option(provider.id, provider.label, provider.id === current));
       }
@@ -522,6 +533,7 @@ pub const GUI_HTML: &str = r#"<!doctype html>
     function refreshProviderSelects() {
       const modes = new Map([
         ['prefer', 'auto'],
+        ['classifierProvider', 'optional'],
         ['profileDefault', 'inherit'],
         ['profileCode', 'inherit'],
         ['profileReasoning', 'inherit'],
@@ -539,6 +551,7 @@ pub const GUI_HTML: &str = r#"<!doctype html>
         document.getElementById('settingCode'),
         document.getElementById('settingReasoning'),
         document.getElementById('settingLocal'),
+        document.getElementById('classifierProvider'),
         document.getElementById('rulePrefer'),
         document.getElementById('profileDefault'),
         document.getElementById('profileCode'),
@@ -801,21 +814,38 @@ pub const GUI_HTML: &str = r#"<!doctype html>
       document.getElementById('budgetCents').value = budget.monthly_api_budget_cents ?? '';
       const server = state.config.server || {};
       document.getElementById('authToken').value = server.auth_token || '';
+      const classification = state.config.classification || {};
+      setSelectValue('classifierMode', classification.mode || 'heuristic');
+      setSelectValue('classifierProvider', classification.provider || '');
+      document.getElementById('classifierMaxPromptChars').value = classification.max_prompt_chars || 12000;
     }
 
     async function saveSettings() {
       const budgetText = document.getElementById('budgetCents').value.trim();
       const authText = document.getElementById('authToken').value.trim();
+      const classifierMaxPromptChars = document.getElementById('classifierMaxPromptChars').value.trim();
       const payload = {
         default_provider: document.getElementById('settingDefault').value,
         code_provider: document.getElementById('settingCode').value,
         reasoning_provider: document.getElementById('settingReasoning').value,
         local_provider: document.getElementById('settingLocal').value,
+        classification_mode: document.getElementById('classifierMode').value,
+        classification_provider: document.getElementById('classifierProvider').value || null,
+        classification_max_prompt_chars: classifierMaxPromptChars ? Number(classifierMaxPromptChars) : null,
         monthly_api_budget_cents: budgetText ? Number(budgetText) : null,
         auth_token: authText || null
       };
       if (budgetText && Number.isNaN(payload.monthly_api_budget_cents)) {
         document.getElementById('configStatus').textContent = 'API budget must be a number.';
+        return;
+      }
+      if (
+        classifierMaxPromptChars
+        && (!Number.isInteger(payload.classification_max_prompt_chars)
+          || payload.classification_max_prompt_chars < 1
+          || payload.classification_max_prompt_chars > 200000)
+      ) {
+        document.getElementById('configStatus').textContent = 'Classifier prompt limit must be between 1 and 200000.';
         return;
       }
       try {

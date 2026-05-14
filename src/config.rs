@@ -118,6 +118,38 @@ pub enum TaskHint {
     Writing,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClassificationMode {
+    #[default]
+    Heuristic,
+    Llm,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ClassificationConfig {
+    #[serde(default)]
+    pub mode: ClassificationMode,
+    #[serde(default)]
+    pub provider: Option<ProviderId>,
+    #[serde(default = "default_classifier_max_prompt_chars")]
+    pub max_prompt_chars: usize,
+}
+
+impl Default for ClassificationConfig {
+    fn default() -> Self {
+        Self {
+            mode: ClassificationMode::Heuristic,
+            provider: None,
+            max_prompt_chars: default_classifier_max_prompt_chars(),
+        }
+    }
+}
+
+fn default_classifier_max_prompt_chars() -> usize {
+    12_000
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub id: ProviderId,
@@ -182,6 +214,8 @@ pub struct RouterConfig {
     pub profiles: Vec<ProjectProfile>,
     #[serde(default)]
     pub favorites: Vec<PathFavorite>,
+    #[serde(default)]
+    pub classification: ClassificationConfig,
     #[serde(default)]
     pub budget: BudgetConfig,
     #[serde(default)]
@@ -253,6 +287,9 @@ impl RouterConfig {
         self.ensure_provider_exists("local_provider", self.routing.local_provider)?;
         for rule in &self.rules {
             self.ensure_provider_exists("route rule prefer", rule.prefer)?;
+        }
+        if let Some(provider) = self.classification.provider {
+            self.ensure_provider_exists("classification provider", provider)?;
         }
         for profile in &self.profiles {
             if let Some(provider) = profile.default_provider {
@@ -428,6 +465,7 @@ impl Default for RouterConfig {
             rules: Vec::new(),
             profiles: Vec::new(),
             favorites: Vec::new(),
+            classification: ClassificationConfig::default(),
             budget: BudgetConfig::default(),
             server: ServerConfig::default(),
         }

@@ -10,11 +10,12 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::{
-    BillingMode, Capability, PathFavorite, ProjectProfile, ProviderConfig, ProviderHealth,
-    ProviderId, ProviderKind, RequestLogEntry, RouteDecision, RouteMatch, RouteRequest, RouteRule,
-    Router, RouterConfig, RoutingConfig, ServerConfig, SpendWindow, TaskHint, append_request_log,
-    apply_project_profile, build_anthropic_cost_request, build_openai_cost_request, health_report,
-    load_config, load_metrics, parse_anthropic_cost_report, parse_openai_costs_response,
+    BillingMode, Capability, ClassificationConfig, PathFavorite, ProjectProfile, ProviderConfig,
+    ProviderHealth, ProviderId, ProviderKind, RequestLogEntry, RouteDecision, RouteMatch,
+    RouteRequest, RouteRule, Router, RouterConfig, RoutingConfig, ServerConfig, SpendWindow,
+    TaskHint, append_request_log, apply_project_profile, build_anthropic_cost_request,
+    build_openai_cost_request, classify_prompt_with_runner, health_report, load_config,
+    load_metrics, parse_anthropic_cost_report, parse_openai_costs_response, run_provider,
     run_provider_with_usage, run_tui, serve_mcp, serve_with_log_and_config_path,
     sync_anthropic_cost_report, sync_openai_costs, try_build_google_billing_query,
 };
@@ -294,7 +295,6 @@ pub fn run() -> anyhow::Result<()> {
         }) => {
             let config = load_config_or_default(config)?;
             let config = config_for_cwd(config, cwd.as_deref())?;
-            let router = Router::new(config);
             let mut request = RouteRequest::new(prompt.clone());
 
             if let Some(provider) = prefer {
@@ -314,7 +314,15 @@ pub fn run() -> anyhow::Result<()> {
             }
 
             let start = Instant::now();
-            let decision = router.route(request)?;
+            let (request, fallback_reasons) = maybe_classify_cli_request(
+                &config,
+                request,
+                &prompt,
+                prefer.is_some(),
+                hint.is_some(),
+            );
+            let mut decision = Router::new(config).route(request)?;
+            prepend_reasons(&mut decision, fallback_reasons);
             append_log(
                 log.as_deref(),
                 "route",
@@ -369,7 +377,15 @@ pub fn run() -> anyhow::Result<()> {
             }
 
             let start = Instant::now();
-            let decision = router.route(request)?;
+            let (request, fallback_reasons) = maybe_classify_cli_request(
+                &config,
+                request,
+                &prompt,
+                prefer.is_some(),
+                hint.is_some(),
+            );
+            let mut decision = router.route(request)?;
+            prepend_reasons(&mut decision, fallback_reasons);
             let provider = config.provider(decision.provider).ok_or(
                 crate::ProviderRunError::MissingProvider {
                     provider: decision.provider,
@@ -650,6 +666,7 @@ fn detected_config(local_endpoint: Option<&str>, auth_token: Option<&str>) -> Ro
             },
         ],
         favorites: detected_favorites(),
+        classification: ClassificationConfig::default(),
         budget: crate::BudgetConfig {
             monthly_api_budget_cents: Some(5_000.0),
         },
@@ -670,6 +687,40 @@ fn detected_favorites() -> Vec<PathFavorite> {
         name,
         path: path.display().to_string(),
     }]
+}
+
+fn maybe_classify_cli_request(
+    config: &RouterConfig,
+    mut request: RouteRequest,
+    prompt: &str,
+    has_preference: bool,
+    has_hint: bool,
+) -> (RouteRequest, Vec<String>) {
+    let mut fallback_reasons = Vec::new();
+    if config.classification.mode == crate::ClassificationMode::Llm && !has_preference && !has_hint
+    {
+        match classify_prompt_with_runner(config, prompt, |provider, classifier_prompt, cwd| {
+            run_provider(provider, classifier_prompt, cwd).map_err(|error| error.to_string())
+        }) {
+            Ok(Some(classification)) => {
+                request = request.with_classification(classification);
+            }
+            Ok(None) => {}
+            Err(message) => fallback_reasons.push(format!(
+                "LLM classifier unavailable: {message}; used heuristic classification."
+            )),
+        }
+    }
+    (request, fallback_reasons)
+}
+
+fn prepend_reasons(decision: &mut RouteDecision, fallback_reasons: Vec<String>) {
+    if fallback_reasons.is_empty() {
+        return;
+    }
+    let mut reasons = fallback_reasons;
+    reasons.append(&mut decision.reasons);
+    decision.reasons = reasons;
 }
 
 fn subscription_provider(
